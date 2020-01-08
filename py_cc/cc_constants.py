@@ -129,14 +129,16 @@ CC_DEVICE_DESC_ACTIONS = (CC_DEVICE_DESC_REQ,
                           CC_DEVICE_DESC_ACK)
 
 # communication states
-WAITING_SYNCING         = 0
-WAITING_HANDSHAKE       = 1
-WAITING_DEV_DESCRIPTOR  = 2
-LISTENING_REQUESTS      = 3
+WAITING_SYNCING             = 0
+WAITING_HANDSHAKE           = 1
+WAITING_DEV_DESCRIPTOR      = 2
+WAITING_DEV_DESCRIPTOR_ACK  = 3
+LISTENING_REQUESTS          = 4
 
 CC_COMMUNICATION_STATES= (WAITING_SYNCING,
                           WAITING_HANDSHAKE,
                           WAITING_DEV_DESCRIPTOR,
+                          WAITING_DEV_DESCRIPTOR_ACK,
                           LISTENING_REQUESTS)
 
 # sync message cycles definition

@@ -81,11 +81,10 @@ class CCMaster:
 
     def _send(self, data):
         if self.send_data is not None and callable(self.send_data):
-            self.send_data([CC_SYNC_BYTE])
-            self.send_data(data)
+            self.send_data([CC_SYNC_BYTE] + data)
 
     def sync(self,):
-        self._send(CCMsgSync(0, {'type' : CC_SYNC_SETUP_CYCLE}).get_tx_bytes())
+        self._send(CCMsgSync(CC_BROADCAST_ADDRESS, {'type' : CC_SYNC_SETUP_CYCLE}).get_tx_bytes())
         self.state = CC_MASTER_STATE_WAITING_FOR_RESET
 
     def run(self,):
@@ -113,7 +112,7 @@ class CCMaster:
             if self.state not in [CC_MASTER_STATE_IDLE, CC_MASTER_STATE_PAIRED] and \
                     time.ticks_diff(now, self.adv_time) > self.ADVERTIZING_INTERVAL_MS:
                 self.state = CC_MASTER_STATE_IDLE
-            time.sleep(0.001)
+                self.adv_time = now
 
     def queue_msg(self, data):
         self.receive_queue.append(data)
@@ -124,7 +123,7 @@ class CCMaster:
     def handle_event(self, event):
         print("CCMaster got event: ", event.__dict__)
         if self.state == CC_MASTER_STATE_WAITING_FOR_RESET and event.id == CC_EV_MASTER_RESETED:
-            self._send(CCMsgSync(0, {'type' : CC_SYNC_HANDSHAKE_CYCLE}).get_tx_bytes())
+            self._send(CCMsgSync(CC_BROADCAST_ADDRESS, {'type' : CC_SYNC_HANDSHAKE_CYCLE}).get_tx_bytes())
             self.state = CC_MASTER_STATE_WAITING_FOR_HANDSHAKE
             self.adv_time = time.ticks_ms()
         if self.state == CC_MASTER_STATE_HANDSHAKING and \
@@ -138,18 +137,20 @@ class CCMaster:
     def handle_response(self, data):
         print("CCMaster got response: ", data)
         if len(data) > 1:
-            address, command , data_len_lsb, data_len_msb, *_data = data
+            sync, address, command , data_len_lsb, data_len_msb, *_data = data
             crc = _data.pop(-1)
             if self.state == CC_MASTER_STATE_WAITING_FOR_HANDSHAKE and command == CC_CMD_HANDSHAKE:
-                message = CCMsgHandshake(address, _data)
+                message = CCMsgHandshake(CC_BROADCAST_ADDRESS, _data)
                 self.state = CC_MASTER_STATE_HANDSHAKING
                 # Reply to device with new device ID
                 device_id = self.assign_next_device_id(message)
                 print("Assigning device id %d" % device_id)
-                reply = CCMsgHandshakeStatus(device_id,
+                reply = CCMsgHandshakeStatus(CC_BROADCAST_ADDRESS,
                                                 {'random_id' : message.handshake.random_id,
                                                  'status' : CC_HANDSHAKE_OK,
-                                                 'channel' : 0,})
+                                                 'assigned_device_id' : device_id,
+                                                #  'channel' : 0,   # NOT SUPPORTED IN CURRENT PROTOCOL!
+                                                 })
                 self._send(reply.get_tx_bytes())
 
             if self.state == CC_MASTER_STATE_WAITING_FOR_DEV_DESCR and command == CC_CMD_DEV_DESCRIPTOR and \
@@ -176,12 +177,24 @@ class CCMaster:
 
 
 if __name__ == "__main__":
+    set_log_level(LOGLEVEL_INFO)
     RUNTIME_SECS = 10
 
     master = CCMaster()
-    device = CCDevice("My Device", "http://this.is.awesome")
-    # us_timer = pyb.Timer(2, prescaler=83, period=0x3fffffff)
-    # us_timer.counter = 0
+
+    # Configure actuators
+    actuators = []
+    for i in range(4):
+        actuators.append(CCActuator("Foot #%d" % (i+1),
+                                    CC_ACTUATOR_MOMENTARY,
+                                    0.0, 1.0,
+                                    CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS,
+                                    max_assignments=1))
+
+    # Device and control chain slave
+    device = CCDevice("Python Footswitch!", "http://audiofab.com", actuators=actuators)
+
+
     slave = CCSlave(master.queue_msg, master.queue_event, timer_set, device)
     master.send_data = slave.protocol.receive_data
     master.start()

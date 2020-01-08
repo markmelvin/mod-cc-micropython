@@ -1,0 +1,7 @@
+rsync -m ./py_cc /flash/py_cc
+
+cp main.py /flash
+
+ls -al /flash
+
+exit

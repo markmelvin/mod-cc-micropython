@@ -1,18 +1,27 @@
 import urandom as random
 import ustruct as struct
 from ucollections import deque
+import micropython
 import time
 
 from .crc8 import crc8
 from .cc_constants import *
 
 random.seed(1)
+micropython.alloc_emergency_exception_buf(100)
 
 SIZEOF_FLOAT = struct.calcsize('f')
 SIZEOF_USHORT = struct.calcsize('H')
 SIZEOF_UINT = struct.calcsize('I')
 
-DEBUG = False
+LOGLEVEL_CRITICAL   = 50
+LOGLEVEL_ERROR      = 40
+LOGLEVEL_WARNING    = 30
+LOGLEVEL_INFO       = 20
+LOGLEVEL_DEBUG      = 10
+LOGLEVEL_NOTSET     = 0
+
+_loglevel = LOGLEVEL_INFO
 
 ############################################
 # Helper functions
@@ -25,12 +34,17 @@ def get_serialized_string(s, max_size=255):
     size = min(len(s), max_size)
     return [size] + [w for w in ("%s" % s[:size]).encode()]
 
-def debug_print(msg, *args):
-    if DEBUG:
+def log(level, msg, *args):
+    if level >= _loglevel:
         msg = str(msg)
         if len(args):
             msg = msg % args
         print(msg)
+
+def set_log_level(level):
+    global _loglevel
+    _loglevel = int(level)
+
 
 ############################################
 # Utility classes
@@ -200,12 +214,15 @@ class CCMsgHandshakeStatus(CCMsg):
         assert len(data) == (offset + 2)
         self.random_id = struct.unpack('H', bytes(data))[0]
         self.status = data[offset]
-        self.channel = data[offset+1]
+        self.assigned_device_id = data[offset+1]
+        # self.channel = data[offset+2]     # THIS IS NOT SUPPORTED IN THE CURRENT PROTOCOL!
 
     def _get_data_payload(self,):
         return [w for w in struct.pack('H', self.random_id)] + \
                     [self.status,
-                     self.channel]
+                     self.assigned_device_id,
+                     #self.channel,         # THIS IS NOT SUPPORTED IN THE CURRENT PROTOCOL!
+                    ]
 
 
 class CCMsgHandshake(CCMsg):
@@ -275,7 +292,7 @@ class CCMsgAssignment(CCMsg):
         actuator_id = data[1]
         offset = 2
         label = get_sized_string(data[offset:])
-        offset += len(label)
+        offset += len(label)+1
         value = struct.unpack('f', bytes(data[offset:]))[0]
         offset += SIZEOF_FLOAT
         _min = struct.unpack('f', bytes(data[offset:]))[0]
@@ -289,13 +306,13 @@ class CCMsgAssignment(CCMsg):
         steps = struct.unpack('H', bytes(data[offset:]))[0]
         offset += SIZEOF_USHORT
         unit = get_sized_string(data[offset:])
-        offset += len(unit)
+        offset += len(unit)+1
         list_items = []
         num_items = data[offset]
         offset += 1
         for i in range(num_items):
             item_label = get_sized_string(data[offset:])
-            offset += len(item_label)
+            offset += len(item_label)+1
             item_value = struct.unpack('f', bytes(data[offset:]))[0]
             offset += SIZEOF_FLOAT
             list_items.append(CCListItem(item_label, item_value))
@@ -306,17 +323,17 @@ class CCMsgAssignment(CCMsg):
 
     def _get_data_payload(self,):
         buffer = [self.assignment.id, self.assignment.actuator_id] + \
-        [w for w in get_serialized_string(self.assignment.label)] + \
+        get_serialized_string(self.assignment.label, max_size=16) + \
         [w for w in struct.pack('f', self.assignment.value)] + \
         [w for w in struct.pack('f', self.assignment.min)] + \
         [w for w in struct.pack('f', self.assignment.max)] + \
         [w for w in struct.pack('f', self.assignment._def)] + \
         [w for w in struct.pack('I', self.assignment.mode)] + \
         [w for w in struct.pack('H', self.assignment.steps)] + \
-        [w for w in get_serialized_string(self.assignment.unit)] + \
+        get_serialized_string(self.assignment.unit, max_size=16) + \
         [len(self.assignment.list_items)]
         for item in self.assignment.list_items:
-            buffer += [w for w in get_serialized_string(item.label)] + \
+            buffer += get_serialized_string(item.label, max_size=16) + \
                       [w for w in struct.pack('f', item.value)]
         return buffer
 
@@ -370,8 +387,8 @@ class CCMsgUpdates(CCMsg):
 
 class CCMsgAssignmentAcknowledge(CCMsg):
     def __init__(self, device_id, assignment_cmd_type, data):
-        super().__init__(device_id, data)
         self.cmd_type = assignment_cmd_type
+        super().__init__(device_id, data)
 
     def get_command(self,):
         return self.cmd_type
@@ -424,7 +441,7 @@ class CCMsgDeviceDescriptor(CCMsg):
 
 def decode_message(device_id, command, data):
     '''Factory function to create a message from the given data'''
-    debug_print("decode_message: %d, %d, %s", device_id, command, data)
+    log(LOGLEVEL_DEBUG, "decode_message: %d, %d, %s", device_id, command, data)
     commands_to_classes = {
         CC_CMD_CHAIN_SYNC       : CCMsgSync,
         CC_CMD_HANDSHAKE        : CCMsgHandshakeStatus,
@@ -436,7 +453,7 @@ def decode_message(device_id, command, data):
     if command in commands_to_classes:
         try:
             return commands_to_classes[command](device_id, data)
-        except AssertionError:
+        except:
             print("An error occurred decoding message (%s)." % str(data))
     return None
 
@@ -470,8 +487,8 @@ class CCProtocol:
         Re-entrant method that receives an array or list of data bytes
         and advances the protocol state machine accordingly.
         '''
-        message = None
-        debug_print("CCProtocol.receive_data(): %s \n(%s)", data, self.__dict__)
+        messages = []
+        log(LOGLEVEL_DEBUG, "CCProtocol.receive_data(): %s \n(%s)", data, self.__dict__)
         for i in range(len(data)):
             b = data[i]
 
@@ -520,13 +537,14 @@ class CCProtocol:
                 if crc8(self.cur_header + self.cur_msg_data) == b:
                     message = decode_message(self.cur_device_id, self.cur_command, self.cur_msg_data)
                     if message is not None:
-                        debug_print("Received message: %s", message)
+                        messages.append(message)
+                        log(LOGLEVEL_INFO, "Received message: %s", message)
                         self.good_message_received = True
                     else:
-                        debug_print("Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
+                        log(LOGLEVEL_WARNING, "Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
                         # unknown message - ignore it
                 else:
-                    debug_print("!! Error, invalid crc detected! (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
+                    log(LOGLEVEL_ERROR, "!! Error, invalid crc detected! (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
                 self._reset()
             self.bytes_received += 1
 
@@ -534,27 +552,33 @@ class CCProtocol:
             if not self.good_message_received and self.bytes_received >= CC_PROTOCOL_MAX_UNKNOWN_BYTES:
                 self._reset(full_reset=True)
 
-        if message is not None:
-            # Call the callback if there is one
-            if self.message_rcv_cb is not None and callable(self.message_rcv_cb):
-                self.message_rcv_cb(message)
+        if len(messages) > 0:
+            for message in messages:
+                # Call the callback for each message if there is one
+                if self.message_rcv_cb is not None and callable(self.message_rcv_cb):
+                    self.message_rcv_cb(message)
 
-        return message
+        return messages
 
 
 CC_UPDATES_QUEUE_SIZE   = 50
 
 
 class CCSlave:
-    def __init__(self, response_cb, events_cb, timer_set_cb, device):
+    def __init__(self, response_cb, events_cb, timer, device):
         self.response_cb = response_cb
         self.events_cb = events_cb
-        self.timer_set = timer_set_cb
+        self.us_timer = timer
+        # Allocate a bound method reference for use in a callback
+        # (see https://docs.micropython.org/en/latest/reference/isr_rules.html#creation-of-python-objects
+        #  and https://forum.micropython.org/viewtopic.php?f=2&t=4027&p=23118#p23118)
+        self.on_timer_ref = self.on_timer
         self.device = device
         self.updates_queue = deque((), CC_UPDATES_QUEUE_SIZE)
         self.sync_counter = 0
         self.handshake_attempts = 0
         self.handshake_timeout = 0
+        self.dev_desc_timeout = 0
         self.comm_state = WAITING_SYNCING
         self.protocol = CCProtocol(message_rcv_cb=self.on_message_received)
 
@@ -564,12 +588,21 @@ class CCSlave:
 
     def process(self,):
         pass
+        # log(LOGLEVEL_DEBUG, "Process!")
 
-    def on_timer(self,):
+    def timer_set(self, value):
+        self.us_timer.init(prescaler=83, period=value, callback=self.timer_cb)
+
+    def timer_cb(self, t):
+        self.us_timer.callback(None)
+        micropython.schedule(self.on_timer_ref, 0)
+
+    def on_timer(self, _):
         # TODO: [future/optimization] the update message shouldn't be built in the interrupt
         # handler, the time of the frame is being wasted with processing. ideally it has to be
         # cached in the main loop and the interrupt handler is only used to queue the message
         # (send command)
+        # log(LOGLEVEL_DEBUG, "In on_timer: %s", len(self.updates_queue))
         if len(self.updates_queue) == 0:
             # the device cannot stay so long time without say hey to mod, it's very needy
             self.sync_counter += 1
@@ -590,16 +623,12 @@ class CCSlave:
                             {'updates' : [self.updates_queue.popleft() for i in range(count)]})
 
     def send_message(self, message):
-        debug_print("Sending message: %s", message.__dict__)
-        if self.response_cb is not None and callable(self.response_cb):
-            # send sync byte
-            self.response_cb([CC_SYNC_BYTE])
-            # send message
-            self.response_cb(message.get_tx_bytes())
+        log(LOGLEVEL_DEBUG, "Sending message: %s", message.__dict__)
+        # send sync byte plus message
+        self.response_cb([CC_SYNC_BYTE] + message.get_tx_bytes())
 
     def raise_event(self, event):
-        if self.events_cb is not None and callable(self.events_cb):
-            self.events_cb(event)
+        self.events_cb(event)
 
     def on_message_received(self, message):
         if message is None or self.device is None:
@@ -640,7 +669,8 @@ class CCSlave:
 
                     # TODO: check status
                     # TODO: handle channel
-                    self.protocol.address = message.device_id
+                    self.protocol.address = message.assigned_device_id
+                    log(LOGLEVEL_INFO, "We were assigned device address %d!", self.protocol.address)
                     self.comm_state = WAITING_DEV_DESCRIPTOR
                     self.handshake_attempts = 0
                     self.handshake_timeout = 0
@@ -657,16 +687,17 @@ class CCSlave:
                     self.handshake_timeout = 0
                     self.comm_state = WAITING_SYNCING
 
-        elif self.comm_state == WAITING_DEV_DESCRIPTOR:
+        elif self.comm_state in (WAITING_DEV_DESCRIPTOR, WAITING_DEV_DESCRIPTOR_ACK):
             if isinstance(message, CCMsgDeviceDescriptorRequest):
-                if message.type == CC_DEVICE_DESC_REQ:
+                if message.type == CC_DEVICE_DESC_REQ and self.comm_state == WAITING_DEV_DESCRIPTOR:
                     # build and send device descriptor message
                     self.send_message(CCMsgDeviceDescriptor(self.protocol.address, {'device' : self.device}))
+                    self.comm_state = WAITING_DEV_DESCRIPTOR_ACK
 
-                elif message.type == CC_DEVICE_DESC_ACK:
+                elif message.type == CC_DEVICE_DESC_ACK and self.comm_state == WAITING_DEV_DESCRIPTOR_ACK:
                     # device descriptor was successfully delivered
                     self.comm_state = LISTENING_REQUESTS
-                    debug_print("Successfully paired with master!")
+                    log(LOGLEVEL_INFO, "Successfully paired with master!")
                     self.dev_desc_timeout = 0
             else:
                 self.dev_desc_timeout += 1
@@ -678,7 +709,7 @@ class CCSlave:
             if isinstance(message, CCMsgSync) and message.type == CC_SYNC_REGULAR_CYCLE:
                 # device id is used to define the communication frame
                 # timer is reset each regular sync message
-                self.timer_set(self.protocol.address * CC_FRAME_PERIOD, self.on_timer)
+                self.timer_set(self.protocol.address * CC_FRAME_PERIOD)
 
             elif isinstance(message, CCMsgDeviceControl):
                 # device disabled
@@ -689,7 +720,7 @@ class CCSlave:
                     while True:
                         pass
 
-            elif isinstance(message, [CCMsgAssignment, CCMsgUnassignment]):
+            elif isinstance(message, (CCMsgAssignment, CCMsgUnassignment)):
                 self.acknowledge_assignment(message)
 
     def acknowledge_assignment(self, message):
