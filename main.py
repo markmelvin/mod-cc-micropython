@@ -20,6 +20,9 @@ TIMER_NUMBER    = 2         # Timer2 is one of the high-speed timers
 UART_NUMBER     = 6         # UART6 is on PC6/7
 SERIAL_TX_EN    = 'PA10'
 
+FOOTSWITCH_DIOS = ['PB3', 'PB4', 'PB5', 'PB6']
+BUTTON_DEBOUNCE_CYCLES = 10
+
 class Thread:
     def __init__(self, group=None, target=None, name=None, args=(), kwargs=None):
         self.target = target
@@ -34,14 +37,19 @@ class Thread:
 
 
 class Footswitch:
-    def __init__(self, number_of_footswitches=4):
+    def __init__(self, led):
+        self.led = led
         # Serial TX enable pin
         self.tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
         self.tx_en.off()
 
+        self.switches = []
         # Configure actuators
         actuators = []
-        for i in range(number_of_footswitches):
+        for i, dio in enumerate(FOOTSWITCH_DIOS):
+            # Configure the DIO
+            self.switches.append(machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP))
+            # Add it as an actuator
             actuators.append(CCActuator("Foot #%d" % (i+1),
                                         CC_ACTUATOR_MOMENTARY,
                                         0.0, 1.0,
@@ -53,8 +61,12 @@ class Footswitch:
         self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
         self.send_queue = deque((), 50)
         self.receive_queue = deque((), 50)
+        self.footswitch_values = [0]*len(self.switches)
+
         self.serial_monitor = Thread(target=self.handle_serial_traffic)
+        self.button_monitor = Thread(target=self.monitor_buttons)
         self.serial_monitor.start()
+        self.button_monitor.start()
 
     def response_cb(self, data):
         self.send_queue.append(data)
@@ -66,6 +78,12 @@ class Footswitch:
         while len(self.receive_queue) > 0:
             self.cc_slave.protocol.receive_data(self.receive_queue.popleft())
         self.cc_slave.process()
+        # print(self.footswitch_values)
+        if self.footswitch_values[0]:
+            self.led.on()
+        else:
+            self.led.off()
+
 
     def handle_serial_traffic(self,):
         uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
@@ -88,6 +106,24 @@ class Footswitch:
                     bytes_left -= uart.write(bytes(buf[-bytes_left:]))
                 self.tx_en.off()
 
+    def monitor_buttons(self,):
+        button_history = [
+            [False]*BUTTON_DEBOUNCE_CYCLES for w in self.switches
+        ]
+
+        while True:
+            for i, switch in enumerate(self.switches):
+                button_history[i].append(switch.value())
+                if len(button_history[i]) > BUTTON_DEBOUNCE_CYCLES:
+                    _ = button_history[i].pop(0)
+                if 1 not in button_history[i]:
+                    self.footswitch_values[i] = True
+                elif 0 not in button_history[i]:
+                    self.footswitch_values[i] = False
+                # else leave state as it was
+            time.sleep_ms(1)
+
+
 def main():
     led = pyb.LED(LED_PIN)
 
@@ -97,7 +133,7 @@ def main():
     led.off()
 
     print("Starting footswitch firmware!")
-    footswitch = Footswitch()
+    footswitch = Footswitch(led)
 
     while True:
         footswitch.process()

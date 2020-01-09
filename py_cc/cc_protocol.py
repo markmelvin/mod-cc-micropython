@@ -538,7 +538,7 @@ class CCProtocol:
                     message = decode_message(self.cur_device_id, self.cur_command, self.cur_msg_data)
                     if message is not None:
                         messages.append(message)
-                        log(LOGLEVEL_INFO, "Received message: %s", message)
+                        log(LOGLEVEL_DEBUG, "Received message: %s", message)
                         self.good_message_received = True
                     else:
                         log(LOGLEVEL_WARNING, "Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
