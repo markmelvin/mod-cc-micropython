@@ -1,7 +1,15 @@
-rsync -m ./py_cc /flash/py_cc
+rm -fr /flash/py_cc
+mkdir /flash/py_cc
+
+cp ./py_cc/__init__.py /flash/py_cc
+cp ./py_cc/cc_classes.mpy /flash/py_cc
+cp ./py_cc/cc_protocol.mpy /flash/py_cc
+cp ./py_cc/cc_constants.mpy /flash/py_cc
+cp ./py_cc/crc8.mpy /flash/py_cc
 
 cp main.py /flash
 
 ls -al /flash
+ls -al /flash/py_cc
 
 exit

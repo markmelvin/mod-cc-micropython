@@ -50,7 +50,8 @@ class Footswitch:
             # Configure the DIO
             self.switches.append(machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP))
             # Add it as an actuator
-            actuators.append(CCActuator("Foot #%d" % (i+1),
+            actuators.append(CCActuator(i,
+                                        "Foot #%d" % (i+1),
                                         CC_ACTUATOR_MOMENTARY,
                                         0.0, 1.0,
                                         CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS,
@@ -61,7 +62,7 @@ class Footswitch:
         self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
         self.send_queue = deque((), 50)
         self.receive_queue = deque((), 50)
-        self.footswitch_values = [0]*len(self.switches)
+        self.footswitch_values = [False]*len(self.switches)
 
         self.serial_monitor = Thread(target=self.handle_serial_traffic)
         self.button_monitor = Thread(target=self.monitor_buttons)
@@ -72,18 +73,16 @@ class Footswitch:
         self.send_queue.append(data)
 
     def events_cb(self, event):
-        print(event.__dict__)
+        print("Got Event: ", event.__dict__)
 
     def process(self,):
         while len(self.receive_queue) > 0:
             self.cc_slave.protocol.receive_data(self.receive_queue.popleft())
-        self.cc_slave.process()
-        # print(self.footswitch_values)
-        if self.footswitch_values[0]:
-            self.led.on()
-        else:
-            self.led.off()
 
+        for i, pressed in enumerate(self.footswitch_values):
+            self.device.actuators[i].value = 1.0 if pressed else 0.0
+
+        self.cc_slave.process()
 
     def handle_serial_traffic(self,):
         uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
@@ -102,13 +101,13 @@ class Footswitch:
                 buf = self.send_queue.popleft()
                 bytes_left = len(buf)
                 while bytes_left > 0:
-                    print("Sending: %s" % [w for w in buf[-bytes_left:]])
+                    # print("Sending: %s" % [w for w in buf[-bytes_left:]])
                     bytes_left -= uart.write(bytes(buf[-bytes_left:]))
                 self.tx_en.off()
 
     def monitor_buttons(self,):
         button_history = [
-            [False]*BUTTON_DEBOUNCE_CYCLES for w in self.switches
+            [1]*BUTTON_DEBOUNCE_CYCLES for w in self.switches
         ]
 
         while True:
