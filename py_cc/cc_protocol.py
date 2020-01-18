@@ -39,49 +39,6 @@ def decode_message(device_id, command, data):
             log(LOGLEVEL_INFO, "An error occurred decoding message (%s).", str(data))
     return None
 
-class CCDevice:
-    def __init__(self, name, uri, actuators=None):
-        self.name = name
-        self.uri = uri
-        self.actuators = [] if actuators is None else actuators
-        self.handshake = None
-        self.assignments = {}
-
-    def add_assignment(self, assignment):
-        log(LOGLEVEL_INFO, "Actuator assignment received: %s", assignment.__dict__)
-        for actuator in self.actuators:
-            if actuator.id == assignment.actuator_id:
-                actuator.assignment = assignment
-                self.assignments[assignment.id] = assignment
-
-        # initialize option list index
-        if assignment.mode == CC_MODE_OPTIONS:
-            for i, list_item in enumerate(assignment.list_items):
-                if assignment.value == list_item.value:
-                    assignment.list_index = i
-                    break
-
-    def remove_assignment(self, assignment_id):
-        actuator_id = -1
-        if assignment_id in self.assignments:
-            log(LOGLEVEL_INFO, "Actuator assingment %d removed!", assignment_id)
-            actuator_id = self.assignments[assignment_id].actuator_id
-            del self.assignments[assignment_id]
-        for actuator in self.actuators:
-            if actuator.assignment is not None and \
-                    (actuator.assignment.id == assignment_id or assignment_id == -1):
-                actuator.assignment = None
-
-        return actuator_id
-
-    def clear_assignments(self,):
-        log(LOGLEVEL_INFO, "Cleared all actuator assignments.")
-        self.remove_assignment(-1)
-        self.assignments = {}
-
-    def __repr__(self,):
-        return self.__dict__
-
 class CCProtocol:
     '''
     Class encapsulating the Control Chain protocol. This protocol consists
@@ -90,8 +47,7 @@ class CCProtocol:
     header and data payload. This class supports receiving messages that may
     be split across multiple calls to the receive_data(data) method.
     '''
-    def __init__(self, address=CC_BROADCAST_ADDRESS, message_rcv_cb=None):
-        self.message_rcv_cb = message_rcv_cb
+    def __init__(self, address=CC_BROADCAST_ADDRESS):
         self.address = address
         self._reset(full_reset=True)
 
@@ -162,7 +118,7 @@ class CCProtocol:
                     message = decode_message(self.cur_device_id, self.cur_command, self.cur_msg_data)
                     if message is not None:
                         messages.append(message)
-                        log(LOGLEVEL_DEBUG, "Received message: %s", message)
+                        log(LOGLEVEL_INFO, "Received message: %s", message)
                         self.good_message_received = True
                     else:
                         log(LOGLEVEL_WARNING, "Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
@@ -175,12 +131,6 @@ class CCProtocol:
             # return error if no valid message was received after CC_PROTOCOL_MAX_UNKNOWN_BYTES bytes
             if not self.good_message_received and self.bytes_received >= CC_PROTOCOL_MAX_UNKNOWN_BYTES:
                 self._reset(full_reset=True)
-
-        if len(messages) > 0:
-            for message in messages:
-                # Call the callback for each message if there is one
-                if self.message_rcv_cb is not None and callable(self.message_rcv_cb):
-                    self.message_rcv_cb(message)
 
         return messages
 
@@ -202,7 +152,7 @@ class CCSlave:
         self.handshake_timeout = 0
         self.dev_desc_timeout = 0
         self.comm_state = WAITING_SYNCING
-        self.protocol = CCProtocol(message_rcv_cb=self.on_message_received)
+        self.protocol = CCProtocol()
 
     def clear_updates(self,):
         while len(self.updates_queue) > 0:
@@ -249,14 +199,14 @@ class CCSlave:
 
     def send_message(self, message):
         if message.command != CC_CMD_CHAIN_SYNC:
-            log(LOGLEVEL_DEBUG, "Sending message: %s", message.__dict__)
+            log(LOGLEVEL_INFO, "Sending message: %s", message.__dict__)
         # send sync byte plus message
-        self.response_cb([CC_SYNC_BYTE] + message.get_tx_bytes())
+        self.response_cb(message)
 
     def raise_event(self, event):
         self.events_cb(event)
 
-    def on_message_received(self, message):
+    def handle_message(self, message):
         if message is None or self.device is None:
             return
 
