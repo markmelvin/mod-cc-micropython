@@ -220,16 +220,18 @@ class CCMsg:
         for this message into the passed buffer. Return the
         number of bytes written.
         '''
+        buffer[0] = CC_SYNC_BYTE
         # Calculate header
-        buffer[0] = self.device_id
-        buffer[1] = self.command
+        buffer[1] = self.device_id
+        buffer[2] = self.command
 
-        _len = 2 + 2 + self._get_data_payload(buffer[4:])
-        buffer[2] = (_len >> 0) & 0xFF
-        buffer[3] = (_len >> 8) & 0xFF
+        payload_len = self._get_data_payload(buffer[5:])
+        _len = 3 + 2 + payload_len
+        buffer[3] = (payload_len >> 0) & 0xFF
+        buffer[4] = (payload_len >> 8) & 0xFF
 
         # append crc
-        buffer[_len] = crc8(buffer)
+        buffer[_len] = crc8(buffer[1:_len])
         return _len + 1
 
 class CCMsgHandshakeStatus(CCMsg):

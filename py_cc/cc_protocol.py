@@ -49,14 +49,16 @@ class CCProtocol:
     '''
     def __init__(self, address=CC_BROADCAST_ADDRESS):
         self.address = address
+        self.cur_header = [0]*CC_MSG_HEADER_SIZE
         self._reset(full_reset=True)
 
     def _reset(self, full_reset=False):
         self.msg_state = MSG_STATE_IDLE
-        self.cur_header = [0]*CC_MSG_HEADER_SIZE
+        for i in range(CC_MSG_HEADER_SIZE):
+            self.cur_header[i] = 0
         self.cur_device_id = -1
         self.cur_command = -1
-        self.cur_data_size = -1
+        self.cur_data_size = 0
         self.cur_msg_data = []
         if full_reset:
             self.bytes_received = 0
@@ -68,7 +70,7 @@ class CCProtocol:
         and advances the protocol state machine accordingly.
         '''
         messages = []
-        log(LOGLEVEL_DEBUG, "CCProtocol.receive_data(): %s \n(%s)", data, self.__dict__)
+        log(LOGLEVEL_DEBUG, "CCProtocol.receive_data(): %s \n(%s)", [w for w in data], self.__dict__)
         for i in range(len(data)):
             b = data[i]
 
@@ -78,6 +80,7 @@ class CCProtocol:
             if self.msg_state == MSG_STATE_IDLE:
                 # sync byte
                 if b == CC_SYNC_BYTE:
+                    log(LOGLEVEL_DEBUG, "got sync byte!\n")
                     self.msg_state = MSG_STATE_READ_ADDRESS
 
             elif self.msg_state == MSG_STATE_READ_ADDRESS:
@@ -85,6 +88,7 @@ class CCProtocol:
                 # check if it's messaging this device or is a broadcast message
                 if b == CC_BROADCAST_ADDRESS or self.address == b or self.address == CC_BROADCAST_ADDRESS:
                     self.cur_device_id = b
+                    log(LOGLEVEL_DEBUG, "cur_device_id=%s\n", self.cur_device_id)
                     self.msg_state = MSG_STATE_READ_COMMAND
                 else:
                     # message is not for us
@@ -93,6 +97,7 @@ class CCProtocol:
             elif self.msg_state == MSG_STATE_READ_COMMAND:
                 # command
                 self.cur_command = b
+                log(LOGLEVEL_DEBUG, "cur_command=%s\n", self.cur_command)
                 self.msg_state = MSG_STATE_READ_DATALEN_LSB
 
             elif self.msg_state == MSG_STATE_READ_DATALEN_LSB:
@@ -103,11 +108,13 @@ class CCProtocol:
             elif self.msg_state == MSG_STATE_READ_DATALEN_MSB:
                 # data size MSB
                 self.cur_data_size = (b << 8) | self.cur_data_size
+                log(LOGLEVEL_DEBUG, "cur_data_size=%s\n", self.cur_data_size)
                 self.msg_state = MSG_STATE_READ_CRC if self.cur_data_size == 0 else MSG_STATE_READ_DATA
 
             elif self.msg_state == MSG_STATE_READ_DATA:
                 # data
                 self.cur_msg_data.append(b)
+                log(LOGLEVEL_DEBUG, "cur_data=%s\n", self.cur_msg_data)
 
                 if len(self.cur_msg_data) == self.cur_data_size:
                     self.msg_state = MSG_STATE_READ_CRC
@@ -115,10 +122,12 @@ class CCProtocol:
             elif self.msg_state == MSG_STATE_READ_CRC:
                 # crc
                 if crc8(self.cur_header + self.cur_msg_data) == b:
+                    log(LOGLEVEL_DEBUG, "crc=%s\n", b)
                     message = decode_message(self.cur_device_id, self.cur_command, self.cur_msg_data)
                     if message is not None:
                         messages.append(message)
-                        log(LOGLEVEL_INFO, "Received message: %s", message)
+                        if message.command != CC_CMD_CHAIN_SYNC:
+                            log(LOGLEVEL_INFO, "Received message: %s", message)
                         self.good_message_received = True
                     else:
                         log(LOGLEVEL_WARNING, "Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
