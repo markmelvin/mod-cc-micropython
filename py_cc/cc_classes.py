@@ -9,6 +9,20 @@ SIZEOF_UINT = struct.calcsize('I')
 ############################################
 # Helper functions
 ############################################
+__loglevel = LOGLEVEL_INFO
+
+def log(level, msg, *args):
+    if level >= __loglevel:
+        msg = str(msg)
+        if len(args):
+            msg = msg % args
+        print(msg)
+
+def set_log_level(level):
+    global __loglevel
+    __loglevel = int(level)
+
+
 def get_sized_string(data):
     size = data[0]
     return bytes(data[1:size+1]).decode()
@@ -172,12 +186,12 @@ class CCActuator:
 
             elif self.type == CC_ACTUATOR_CONTINUOUS:
                 pass
-                # # check if actuator value has changed the minimum required value
-                # delta = (self.max + self.min) * 0.01
-                # if abs(self.last_value - self.value) >= delta:
-                #     self.last_value = self.value
-                #     self.assignment.update_from_actuator(self)
-                #     updated = True
+                # check if actuator value has changed the minimum required value
+                delta = (self.max + self.min) * 0.01
+                if abs(self.last_value - self.value) >= delta:
+                    self.last_value = self.value
+                    self.assignment.update_from_actuator(self)
+                    updated = True
 
         return updated
 
@@ -470,8 +484,8 @@ class CCMsgDeviceDescriptor(CCMsg):
         # serialize name
         _len += get_serialized_string(self.device.name, buffer[_len:])
         # number of actuators
-        buffer[_len + 1] = len(self.device.actuators)
-        _len += 2
+        buffer[_len] = len(self.device.actuators)
+        _len += 1
 
         # serialize actuators data
         for actuator in self.device.actuators:

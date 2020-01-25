@@ -16,7 +16,7 @@ from py_cc.cc_protocol import CCDevice, CCSlave, CCActuator, \
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, \
                                CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_SYNC_BYTE, \
-                               CC_MSG_HEADER_SIZE
+                               CC_MODE_FEEDBACK, CC_MSG_HEADER_SIZE
 
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
 LED_PIN         = 1
@@ -45,21 +45,24 @@ class Thread:
 
 
 class SerialManager:
-    def __init__(self, receive_cb, send_queue):
+    def __init__(self, recv_queue, send_queue):
         # Serial TX enable pin
+        self.uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=128)
         self.tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
         self.tx_en.off()
 
-        self.receive_cb = receive_cb
+        self.recv_queue = recv_queue
         self.send_queue = send_queue
 
+        self.lock = _thread.allocate_lock()
+        self.start_ptr = 0   # start of used data in the buffer
+        self.end_ptr = 0     # start of free space in the buffer
         self.serial_monitor = Thread(target=self.handle_serial_traffic)
         self.serial_monitor.start()
 
     def handle_serial_traffic(self,):
-        uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=512)
-        # Allocate fixed buffers once upfront and use memoryviews
-        # to save on allocations and reduce fragmentation
+        # Allocate fixed buffers once up-front and use memoryviews
+        # to save on allocations and reduce memory fragmentation
         _rx_buffer = bytearray(RX_BUFFER_SIZE)
         _tx_buffer = bytearray(TX_BUFFER_SIZE)
 
@@ -68,12 +71,34 @@ class SerialManager:
 
         while True:
             # Check for new bytes
-            if (uart.any() > CC_MSG_HEADER_SIZE):
-                _len = uart.readinto(RX_BUF[0:], uart.any())
-                print("Read %d bytes!" % _len)
-                print([w for w in RX_BUF[0:_len]])
-                if _len:
-                    self.receive_cb(RX_BUF[0:_len])
+            bytes_avail =  self.uart.any()
+            if (bytes_avail > CC_MSG_HEADER_SIZE):
+                if self.start_ptr > self.end_ptr:
+                    free_space = (self.start_ptr - self.end_ptr)
+                else:
+                    free_space = (RX_BUFFER_SIZE - self.start_ptr - self.end_ptr)
+                if free_space < bytes_avail:
+                    print("ERROR: Losing %d bytes of data!" % (bytes_avail - free_space))
+
+                bytes_to_read = min(bytes_avail, free_space)
+                overflow = (self.end_ptr + bytes_to_read) - RX_BUFFER_SIZE
+                if overflow > 0:
+                    # Split into memory views that don't cross buffer boundary
+                    buf = RX_BUF[self.end_ptr:]
+                    self._fill(buf)
+                    self.recv_queue.append((self.end_ptr, buf))
+
+                    # Update final end pointer
+                    self.end_ptr = overflow
+                    buf = RX_BUF[0:self.end_ptr]
+                    self._fill(buf)
+                    self.recv_queue.append((0, buf))
+
+                else:
+                    buf = RX_BUF[self.end_ptr:self.end_ptr + bytes_to_read]
+                    self._fill(buf)
+                    self.recv_queue.append((self.end_ptr, buf))
+                    self.end_ptr += bytes_to_read
 
             # Service any queued messages to be sent
             if len(self.send_queue) > 0:
@@ -85,9 +110,25 @@ class SerialManager:
                 bytes_written = 0
                 while bytes_written < num_tx_bytes:
                     print("Sending: %s" % [w for w in TX_BUF[bytes_written:num_tx_bytes]])
-                    bytes_written += uart.write(TX_BUF[bytes_written:num_tx_bytes])
+                    bytes_written += self.uart.write(TX_BUF[bytes_written:num_tx_bytes])
                 self.tx_en.off()
                 del message
+
+    def _fill(self, buffer):
+        length = len(buffer)
+        remaining = length
+        while remaining > 0:
+            _read = self.uart.readinto(buffer[length-remaining:], remaining)
+            remaining -= _read
+
+    def free(self, idx, _len):
+        with self.lock:
+            # Adjust start pointer based on memory we're freeing
+            overflow = RX_BUFFER_SIZE - (self.start_ptr + _len)
+            if overflow > 0:
+                self.start_ptr = overflow
+            else:
+                self.start_ptr += _len
 
 
 class Footswitch:
@@ -115,7 +156,7 @@ class Footswitch:
                                     "Sine Wave",
                                     CC_ACTUATOR_CONTINUOUS,
                                     0.0, 1.0,
-                                    CC_MODE_REAL,
+                                    CC_MODE_REAL | CC_MODE_OPTIONS | CC_MODE_FEEDBACK,
                                     max_assignments=1))
 
         # Device and control chain slave
@@ -125,7 +166,7 @@ class Footswitch:
         self.receive_queue = deque((), 20)
         self.footswitch_values = [False]*len(self.switches)
 
-        self.serial = SerialManager(self.bytes_received, self.send_queue)
+        self.serial = SerialManager(self.receive_queue, self.send_queue)
         self.button_monitor = Thread(target=self.monitor_buttons)
         self.button_monitor.start()
 
@@ -138,8 +179,7 @@ class Footswitch:
     def process(self,):
         now = time.ticks_ms()
 
-        if len(self.receive_queue) > 0:
-            self.cc_slave.handle_message(self.receive_queue.popleft())
+        self.process_recv_queue()
 
         for i, pressed in enumerate(self.footswitch_values):
             self.device.actuators[i].value = 1.0 if pressed else 0.0
@@ -155,11 +195,15 @@ class Footswitch:
 
         self.cc_slave.process()
 
-    def bytes_received(self, data):
-        messages = self.cc_slave.protocol.receive_data(data)
-        if messages is not None:
-            for msg in messages:
-                self.receive_queue.append(msg)
+    def process_recv_queue(self,):
+        while len(self.receive_queue) > 0:
+            start_index, data = self.receive_queue.popleft()
+            messages = self.cc_slave.protocol.receive_data(data)
+            # Free data in circular buffer
+            self.serial.free(start_index, len(data))
+            if messages is not None:
+                for msg in messages:
+                    self.cc_slave.handle_message(msg)
 
     def monitor_buttons(self,):
         button_history = [
@@ -195,6 +239,6 @@ def main():
 
 
 if __name__ == "__main__":
-    set_log_level(LOGLEVEL_DEBUG)
+    set_log_level(LOGLEVEL_INFO)
     gc.collect()
     main()

@@ -8,18 +8,6 @@ micropython.alloc_emergency_exception_buf(100)
 
 from .cc_classes import *
 
-_loglevel = LOGLEVEL_INFO
-
-def log(level, msg, *args):
-    if level >= _loglevel:
-        msg = str(msg)
-        if len(args):
-            msg = msg % args
-        print(msg)
-
-def set_log_level(level):
-    global _loglevel
-    _loglevel = int(level)
 
 def decode_message(device_id, command, data):
     '''Factory function to create a message from the given data'''
@@ -51,6 +39,10 @@ class CCProtocol:
         self.address = address
         self.cur_header = [0]*CC_MSG_HEADER_SIZE
         self._reset(full_reset=True)
+        # TODO - Allocate some fixed objects to receive/send sync
+        #        messages as these are very frequent and never change
+        #        their data. This would save on allocations and reduce
+        #        GCs.
 
     def _reset(self, full_reset=False):
         self.msg_state = MSG_STATE_IDLE
