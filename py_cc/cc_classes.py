@@ -9,17 +9,80 @@ SIZEOF_UINT = struct.calcsize('I')
 ############################################
 # Helper functions
 ############################################
+__loglevel = LOGLEVEL_INFO
+
+def log(level, msg, *args):
+    if level >= __loglevel:
+        msg = str(msg)
+        if len(args):
+            msg = msg % args
+        print(msg)
+
+def set_log_level(level):
+    global __loglevel
+    __loglevel = int(level)
+
+
 def get_sized_string(data):
     size = data[0]
     return bytes(data[1:size+1]).decode()
 
-def get_serialized_string(s, max_size=255):
+def get_serialized_string(s, buffer, max_size=255):
+    '''
+    Encode a string into the given buffer. Return the
+    number of bytes written into the buffer.
+    '''
     size = min(len(s), max_size)
-    return [size] + [w for w in ("%s" % s[:size]).encode()]
+    buffer[0] = size
+    buffer[1:size+1] = ("%s" % s[:size]).encode()
+    return size + 1
 
 ############################################
 # Utility classes
 ############################################
+class CCDevice:
+    def __init__(self, name, uri, actuators=None):
+        self.name = name
+        self.uri = uri
+        self.actuators = [] if actuators is None else actuators
+        self.handshake = None
+        self.assignments = {}
+
+    def add_assignment(self, assignment):
+        log(LOGLEVEL_INFO, "Actuator assignment received: %s", assignment.__dict__)
+        for actuator in self.actuators:
+            if actuator.id == assignment.actuator_id:
+                actuator.assignment = assignment
+                self.assignments[assignment.id] = assignment
+
+        # initialize option list index
+        if assignment.mode & CC_MODE_OPTIONS:
+            for i, list_item in enumerate(assignment.list_items):
+                if assignment.value == list_item.value:
+                    assignment.list_index = i
+                    break
+
+    def remove_assignment(self, assignment_id):
+        actuator_id = -1
+        if assignment_id in self.assignments:
+            log(LOGLEVEL_INFO, "Actuator assingment %d removed!", assignment_id)
+            actuator_id = self.assignments[assignment_id].actuator_id
+            del self.assignments[assignment_id]
+        for actuator in self.actuators:
+            if actuator.assignment is not None and \
+                    (actuator.assignment.id == assignment_id or assignment_id == -1):
+                actuator.assignment = None
+
+        return actuator_id
+
+    def clear_assignments(self,):
+        log(LOGLEVEL_INFO, "Cleared all actuator assignments.")
+        self.remove_assignment(-1)
+        self.assignments = {}
+
+    def __repr__(self,):
+        return self.__dict__
+
 class CCVersion:
     def __init__(self, major, minor, micro):
         self.major = major
@@ -123,12 +186,12 @@ class CCActuator:
 
             elif self.type == CC_ACTUATOR_CONTINUOUS:
                 pass
-                # # check if actuator value has changed the minimum required value
-                # delta = (self.max + self.min) * 0.01
-                # if abs(self.last_value - self.value) >= delta:
-                #     self.last_value = self.value
-                #     self.assignment.update_from_actuator(self)
-                #     updated = True
+                # check if actuator value has changed the minimum required value
+                delta = (self.max + self.min) * 0.01
+                if abs(self.last_value - self.value) >= delta:
+                    self.last_value = self.value
+                    self.assignment.update_from_actuator(self)
+                    updated = True
 
         return updated
 
@@ -158,33 +221,32 @@ class CCMsg:
         '''
         pass
 
-    def _get_data_payload(self,):
+    def _get_data_payload(self, buffer):
         '''
-        Get the data payload for this command
+        Write the data payload for this command into buffer.
+        *Must* return the length of the data payload.
         '''
-        return []
+        return 0
 
-    def get_tx_bytes(self,):
+    def get_tx_bytes(self, buffer):
         '''
-        Get the data bytes to be transmitted on the wire for this message
+        Write the data bytes to be transmitted on the wire
+        for this message into the passed buffer. Return the
+        number of bytes written.
         '''
-        buffer = []
-        data = self._get_data_payload()
-
+        buffer[0] = CC_SYNC_BYTE
         # Calculate header
-        buffer.append(self.device_id)
-        buffer.append(self.command)
-        data_len = len(data)
-        buffer.append((data_len >> 0) & 0xFF)
-        buffer.append((data_len >> 8) & 0xFF)
+        buffer[1] = self.device_id
+        buffer[2] = self.command
 
-        # Add data
-        if data_len > 0:
-            buffer.extend(data)
+        payload_len = self._get_data_payload(buffer[5:])
+        _len = 3 + 2 + payload_len
+        buffer[3] = (payload_len >> 0) & 0xFF
+        buffer[4] = (payload_len >> 8) & 0xFF
 
-        # calculate crc
-        buffer.append(crc8(buffer))
-        return buffer
+        # append crc
+        buffer[_len] = crc8(buffer[1:_len])
+        return _len + 1
 
 class CCMsgHandshakeStatus(CCMsg):
     def get_command(self,):
@@ -198,12 +260,13 @@ class CCMsgHandshakeStatus(CCMsg):
         self.assigned_device_id = data[offset+1]
         # self.channel = data[offset+2]     # THIS IS NOT SUPPORTED IN THE CURRENT PROTOCOL!
 
-    def _get_data_payload(self,):
-        return [w for w in struct.pack('H', self.random_id)] + \
-                    [self.status,
-                     self.assigned_device_id,
-                     #self.channel,         # THIS IS NOT SUPPORTED IN THE CURRENT PROTOCOL!
-                    ]
+    def _get_data_payload(self, buffer):
+        _len = SIZEOF_USHORT
+        struct.pack_into('H', buffer, 0, self.random_id)
+        buffer[_len]     = self.status
+        buffer[_len + 1] = self.assigned_device_id
+        #self.channel,         # THIS IS NOT SUPPORTED IN THE CURRENT PROTOCOL!
+        return _len + 2
 
 class CCMsgHandshake(CCMsg):
     def get_command(self,):
@@ -229,14 +292,16 @@ class CCMsgHandshake(CCMsg):
                                      CCVersion(protocol_major, protocol_minor, protocol_micro),
                                      CCVersion(firmware_major, firmware_minor, firmware_micro))
 
-    def _get_data_payload(self,):
-        return [w for w in struct.pack('H', self.handshake.random_id)] + \
-                    [self.handshake.protocol_version.major,
-                     self.handshake.protocol_version.minor,
-                     #self.handshake.protocol_version.micro,    # The C version doesn't send this
-                     self.handshake.firmware_version.major,
-                     self.handshake.firmware_version.minor,
-                     self.handshake.firmware_version.micro]
+    def _get_data_payload(self, buffer):
+        _len = SIZEOF_USHORT
+        struct.pack_into('H', buffer, 0, self.handshake.random_id)
+        buffer[_len]     = self.handshake.protocol_version.major
+        buffer[_len + 1] = self.handshake.protocol_version.minor
+        #self.handshake.protocol_version.micro,    # The C version doesn't send this
+        buffer[_len + 2] = self.handshake.firmware_version.major
+        buffer[_len + 3] = self.handshake.firmware_version.minor
+        buffer[_len + 4] = self.handshake.firmware_version.micro
+        return _len + 5
 
 class CCMsgDeviceControl(CCMsg):
     def get_command(self,):
@@ -246,8 +311,9 @@ class CCMsgDeviceControl(CCMsg):
         assert len(data) == 1
         self.enable = bool(data[0])
 
-    def _get_data_payload(self,):
-        return [int(self.enable)]
+    def _get_data_payload(self, buffer):
+        buffer[0] = int(self.enable)
+        return 1
 
 class CCMsgDeviceDescriptorRequest(CCMsg):
     def get_command(self,):
@@ -257,8 +323,9 @@ class CCMsgDeviceDescriptorRequest(CCMsg):
         assert len(data) == 1
         self.type = data[0]
 
-    def _get_data_payload(self,):
-        return [self.type]
+    def _get_data_payload(self, buffer):
+        buffer[0] = self.type
+        return 1
 
 class CCMsgAssignment(CCMsg):
     def get_command(self,):
@@ -291,28 +358,40 @@ class CCMsgAssignment(CCMsg):
             item_label = get_sized_string(data[offset:])
             offset += len(item_label)+1
             item_value = struct.unpack('f', bytes(data[offset:]))[0]
-            # offset += SIZEOF_FLOAT
+            offset += SIZEOF_FLOAT
             list_items.append(CCListItem(item_label, item_value))
 
         self.assignment = CCAssignment(_id, actuator_id, label, value,
                                        _min, _max, _def, mode, steps,
                                        unit, list_items=list_items)
 
-    def _get_data_payload(self,):
-        buffer = [self.assignment.id, self.assignment.actuator_id] + \
-        get_serialized_string(self.assignment.label, max_size=16) + \
-        [w for w in struct.pack('f', self.assignment.value)] + \
-        [w for w in struct.pack('f', self.assignment.min)] + \
-        [w for w in struct.pack('f', self.assignment.max)] + \
-        [w for w in struct.pack('f', self.assignment._def)] + \
-        [w for w in struct.pack('I', self.assignment.mode)] + \
-        [w for w in struct.pack('H', self.assignment.steps)] + \
-        get_serialized_string(self.assignment.unit, max_size=16) + \
-        [len(self.assignment.list_items)]
+    def _get_data_payload(self, buffer):
+        buffer[0] = self.assignment.id
+        buffer[1] = self.assignment.actuator_id
+        _len = 2
+        _len += get_serialized_string(self.assignment.label, buffer[_len:], max_size=16)
+        struct.pack_into('f', buffer, _len, self.assignment.value)
+        _len += SIZEOF_FLOAT
+        struct.pack_into('f', buffer, _len, self.assignment.min)
+        _len += SIZEOF_FLOAT
+        struct.pack_into('f', buffer, _len, self.assignment.max)
+        _len += SIZEOF_FLOAT
+        struct.pack_into('f', buffer, _len, self.assignment._def)
+        _len += SIZEOF_FLOAT
+        struct.pack_into('I', buffer, _len, self.assignment.mode)
+        _len += SIZEOF_UINT
+        struct.pack_into('H', buffer, _len, self.assignment.steps)
+        _len += SIZEOF_USHORT
+        _len += get_serialized_string(self.assignment.unit, buffer[_len:], max_size=16)
+        buffer[_len] = self.assignment.list_items
+        _len += 1
+
         for item in self.assignment.list_items:
-            buffer += get_serialized_string(item.label, max_size=16) + \
-                      [w for w in struct.pack('f', item.value)]
-        return buffer
+            _len += get_serialized_string(item.label, buffer[_len:], max_size=16)
+            struct.pack_into('f', buffer, _len, item.value)
+            _len += SIZEOF_FLOAT
+
+        return _len
 
 class CCMsgUnassignment(CCMsg):
     def get_command(self,):
@@ -322,8 +401,9 @@ class CCMsgUnassignment(CCMsg):
         assert len(data) == 1
         self.assignment_id = data[0]
 
-    def _get_data_payload(self,):
-        return [self.assignment_id]
+    def _get_data_payload(self, buffer):
+        buffer[0] = self.assignment_id
+        return 1
 
 class CCMsgSync(CCMsg):
     def get_command(self,):
@@ -333,8 +413,9 @@ class CCMsgSync(CCMsg):
         assert len(data) == 1
         self.type = data[0]
 
-    def _get_data_payload(self,):
-        return [self.type]
+    def _get_data_payload(self, buffer):
+        buffer[0] = self.type
+        return 1
 
 class CCMsgUpdates(CCMsg):
     def get_command(self,):
@@ -350,13 +431,17 @@ class CCMsgUpdates(CCMsg):
             offset += 1 + SIZEOF_FLOAT
             self.updates.append(CCUpdate(assignment_id, value))
 
-    def _get_data_payload(self,):
-        data = [len(self.updates)]
+    def _get_data_payload(self, buffer):
+        buffer[0] = len(self.updates)
+        _len = 1
 
         for update in self.updates:
-            data.append(update.assignment_id)
-            data.extend([w for w in struct.pack('f', update.value)])
-        return data
+            buffer[_len] = update.assignment_id
+            _len += 1
+            struct.pack_into('f', buffer, _len, update.value)
+            _len += SIZEOF_FLOAT
+
+        return _len
 
 class CCMsgAssignmentAcknowledge(CCMsg):
     def __init__(self, device_id, assignment_cmd_type, data):
@@ -393,20 +478,23 @@ class CCMsgDeviceDescriptor(CCMsg):
                                         max_assignments=max_assignments))
         self.device = CCDevice(name, uri, actuators=actuators)
 
-    def _get_data_payload(self,):
+    def _get_data_payload(self, buffer):
         # serialize uri
-        data = get_serialized_string(self.device.uri)
+        _len = get_serialized_string(self.device.uri, buffer)
         # serialize name
-        data.extend(get_serialized_string(self.device.name))
+        _len += get_serialized_string(self.device.name, buffer[_len:])
         # number of actuators
-        data.append(len(self.device.actuators))
+        buffer[_len] = len(self.device.actuators)
+        _len += 1
 
         # serialize actuators data
         for actuator in self.device.actuators:
             # actuator name
-            data.extend(get_serialized_string(actuator.name, max_size=16))
+            _len += get_serialized_string(actuator.name, buffer[_len:], max_size=16)
             # supported modes
-            data.extend([w for w in struct.pack('I', actuator.supported_modes)])
-            data.append(actuator.max_assignments)
+            struct.pack_into('I', buffer, _len, actuator.supported_modes)
+            _len += SIZEOF_UINT
+            buffer[_len] = actuator.max_assignments
+            _len += 1
 
-        return data
+        return _len
