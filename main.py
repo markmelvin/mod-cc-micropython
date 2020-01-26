@@ -16,18 +16,18 @@ from py_cc.cc_protocol import CCDevice, CCSlave, CCActuator, \
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, \
                                CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_SYNC_BYTE, \
-                               CC_MODE_FEEDBACK, CC_MSG_HEADER_SIZE
+                               CC_MODE_FEEDBACK, SYNC_SIZE_BYTES
 
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
 LED_PIN         = 1
 TIMER_NUMBER    = 2         # Timer2 is one of the high-speed timers
 UART_NUMBER     = 6         # UART6 is on PC6/7
-SERIAL_TX_EN    = 'PA10'
+SERIAL_TX_EN    = 'PA10'    # Serial "is transmitting" pin
 
 FOOTSWITCH_DIOS = ['PB3', 'PB4', 'PB5', 'PB6']
 BUTTON_DEBOUNCE_CYCLES = 10
 
-RX_BUFFER_SIZE = 1344
+RX_BUFFER_SIZE = 2048
 TX_BUFFER_SIZE = 128
 
 
@@ -47,7 +47,7 @@ class Thread:
 class SerialManager:
     def __init__(self, recv_queue, send_queue):
         # Serial TX enable pin
-        self.uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=128)
+        self.uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
         self.tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
         self.tx_en.off()
 
@@ -72,39 +72,45 @@ class SerialManager:
         while True:
             # Check for new bytes
             bytes_avail =  self.uart.any()
-            if (bytes_avail > CC_MSG_HEADER_SIZE):
-                if self.start_ptr > self.end_ptr:
-                    free_space = (self.start_ptr - self.end_ptr)
-                else:
-                    free_space = (RX_BUFFER_SIZE - self.start_ptr - self.end_ptr)
-                if free_space < bytes_avail:
-                    print("ERROR: Losing %d bytes of data!" % (bytes_avail - free_space))
+            if bytes_avail > 0:
+                with self.lock:
+                    if self.start_ptr > self.end_ptr:
+                        free_space = (self.start_ptr - self.end_ptr)
+                    else:
+                        free_space = (RX_BUFFER_SIZE - (self.end_ptr - self.start_ptr))
 
-                bytes_to_read = min(bytes_avail, free_space)
-                overflow = (self.end_ptr + bytes_to_read) - RX_BUFFER_SIZE
-                if overflow > 0:
-                    # Split into memory views that don't cross buffer boundary
-                    buf = RX_BUF[self.end_ptr:]
-                    self._fill(buf)
-                    self.recv_queue.append((self.end_ptr, buf))
+                    if free_space < bytes_avail:
+                        #TODO - handle failure in a robust manner
+                        print("ERROR: Losing %d bytes of data!" % (bytes_avail - free_space))
 
-                    # Update final end pointer
-                    self.end_ptr = overflow
-                    buf = RX_BUF[0:self.end_ptr]
-                    self._fill(buf)
-                    self.recv_queue.append((0, buf))
+                    bytes_to_read = min(bytes_avail, free_space)
+                    overflow = (self.end_ptr + bytes_to_read) - RX_BUFFER_SIZE
+                    if overflow > 0:
+                        # Split into memory views that don't cross buffer boundary
+                        buf = RX_BUF[self.end_ptr:]
+                        self._fill(buf)
+                        self.recv_queue.append((self.end_ptr, buf))
 
-                else:
-                    buf = RX_BUF[self.end_ptr:self.end_ptr + bytes_to_read]
-                    self._fill(buf)
-                    self.recv_queue.append((self.end_ptr, buf))
-                    self.end_ptr += bytes_to_read
+                        # Update final end pointer
+                        self.end_ptr = overflow
+                        buf = RX_BUF[0:self.end_ptr]
+                        self._fill(buf)
+                        self.recv_queue.append((0, buf))
+
+                    else:
+                        buf = RX_BUF[self.end_ptr:self.end_ptr + bytes_to_read]
+                        self._fill(buf)
+                        self.recv_queue.append((self.end_ptr, buf))
+                        self.end_ptr += bytes_to_read
+                        if self.end_ptr == RX_BUFFER_SIZE:
+                            self.end_ptr = 0
 
             # Service any queued messages to be sent
             if len(self.send_queue) > 0:
                 # Enable serial TX
                 self.tx_en.on()
-                time.sleep_us(100)
+                # TODO - Figure out what this should be...
+                time.sleep_us(300)
                 message = self.send_queue.popleft()
                 num_tx_bytes = message.get_tx_bytes(TX_BUF[0:])
                 bytes_written = 0
@@ -124,8 +130,8 @@ class SerialManager:
     def free(self, idx, _len):
         with self.lock:
             # Adjust start pointer based on memory we're freeing
-            overflow = RX_BUFFER_SIZE - (self.start_ptr + _len)
-            if overflow > 0:
+            overflow = (self.start_ptr + _len) - RX_BUFFER_SIZE
+            if overflow >= 0:
                 self.start_ptr = overflow
             else:
                 self.start_ptr += _len
@@ -136,6 +142,7 @@ class Footswitch:
         self.led = led
         self.analog = 0.0
         self.last_tick = time.ticks_ms()
+        self.last_analog_change = time.ticks_ms()
 
         self.switches = []
         # Configure actuators
@@ -162,8 +169,8 @@ class Footswitch:
         # Device and control chain slave
         self.device = CCDevice("Python Footswitch!", "http://audiofab.com", actuators=actuators)
         self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
-        self.send_queue = deque((), 20)
-        self.receive_queue = deque((), 20)
+        self.send_queue = deque((), 50)
+        self.receive_queue = deque((), 50)
         self.footswitch_values = [False]*len(self.switches)
 
         self.serial = SerialManager(self.receive_queue, self.send_queue)
@@ -184,15 +191,14 @@ class Footswitch:
         for i, pressed in enumerate(self.footswitch_values):
             self.device.actuators[i].value = 1.0 if pressed else 0.0
 
-        self.analog += 0.01
-        if self.analog > math.pi:
-            self.analog = 0.0
-        self.device.actuators[len(self.footswitch_values)].value = math.sin(self.analog)
+        if time.ticks_diff(now, self.last_analog_change) > 50:
+            self.analog += 0.01
+            if self.analog > math.pi:
+                self.analog = 0.0
+            self.device.actuators[len(self.footswitch_values)].value = math.sin(self.analog)
+            self.last_analog_change = now
 
-        if time.ticks_diff(now, self.last_tick) > 1000:
-            print(len(self.receive_queue), len(self.send_queue), gc.mem_free())
-            self.last_tick = now
-
+        self.last_tick = now
         self.cc_slave.process()
 
     def process_recv_queue(self,):

@@ -73,6 +73,7 @@ class CCProtocol:
                 # sync byte
                 if b == CC_SYNC_BYTE:
                     log(LOGLEVEL_DEBUG, "got sync byte!\n")
+                    self._reset()
                     self.msg_state = MSG_STATE_READ_ADDRESS
 
             elif self.msg_state == MSG_STATE_READ_ADDRESS:
@@ -122,10 +123,12 @@ class CCProtocol:
                             log(LOGLEVEL_INFO, "Received message: %s", message)
                         self.good_message_received = True
                     else:
-                        log(LOGLEVEL_WARNING, "Unknown message ignored (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
+                        log(LOGLEVEL_WARNING, "Unknown message ignored (header=%s, device_id=%d, command=0x%02X, size=%d, data=%s)", \
+                                self.cur_header, self.cur_device_id, self.cur_command, self.cur_data_size, self.cur_msg_data)
                         # unknown message - ignore it
                 else:
-                    log(LOGLEVEL_ERROR, "!! Error, invalid crc detected! (command=0x%02X, data=%s)", self.cur_command, self.cur_msg_data)
+                    log(LOGLEVEL_ERROR, "!! Error, invalid crc detected! (header=%s, device_id=%d, command=0x%02X, size=%d, data=%s)", \
+                                self.cur_header, self.cur_device_id, self.cur_command, self.cur_data_size, self.cur_msg_data)
                 self._reset()
             self.bytes_received += 1
 

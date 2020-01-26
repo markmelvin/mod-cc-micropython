@@ -65,7 +65,7 @@ class CCDevice:
     def remove_assignment(self, assignment_id):
         actuator_id = -1
         if assignment_id in self.assignments:
-            log(LOGLEVEL_INFO, "Actuator assingment %d removed!", assignment_id)
+            log(LOGLEVEL_INFO, "Actuator assignment %d removed!", assignment_id)
             actuator_id = self.assignments[assignment_id].actuator_id
             del self.assignments[assignment_id]
         for actuator in self.actuators:
@@ -123,10 +123,12 @@ class CCAssignment:
         self.list_index = 0
 
     def update_from_actuator(self, actuator):
+        list_count = len(self.list_items)
+
         if actuator.type == CC_ACTUATOR_MOMENTARY:
             if self.mode & CC_MODE_OPTIONS:
                 self.list_index += 1
-                if self.list_index >= len(self.list_items):
+                if self.list_index >= list_count:
                     self.list_index = 0
                 self.value = self.list_items[self.list_index].value
 
@@ -136,8 +138,44 @@ class CCAssignment:
                 elif self.mode & CC_MODE_TOGGLE:
                     self.value = 1.0 - self.value
 
+            return True
+
         elif actuator.type == CC_ACTUATOR_CONTINUOUS:
-            pass
+            # toggle and trigger modes
+            if self.mode & CC_MODE_TOGGLE or self.mode & CC_MODE_TRIGGER:
+                middle = (actuator.max + actuator.min) / 2.0
+                if actuator.value >= middle:
+                    self.value = 1.0
+                elif self.mode & CC_MODE_TOGGLE:
+                    self.value = 0.0
+                else:
+                    return False
+                return True
+
+            # option list mode
+            if self.mode & CC_MODE_OPTIONS:
+                step = (actuator.max + actuator.min) / float(list_count)
+                self.list_index = int(actuator.value // step)
+                if self.list_index >= list_count:
+                    self.list_index = list_count - 1
+                self.value = self.list_items[self.list_index].value
+                return True
+
+            a = (self.max - self.min) / (actuator.max - actuator.min)
+            b = self.min - a*actuator.min
+            value = a*actuator.value + b
+
+            # real mode
+            if self.mode & CC_MODE_REAL:
+                self.value = value
+                return True
+
+            # integer mode
+            elif self.mode & CC_MODE_INTEGER:
+                self.value = round(value)
+                return True
+
+        return False
 
 class CCUpdate:
     def __init__(self, assignment_id, value):
@@ -179,19 +217,16 @@ class CCActuator:
                 if self.value > 0.0:
                     if not self.lock:
                         self.lock = True
-                        self.assignment.update_from_actuator(self)
-                        updated = True
+                        updated = self.assignment.update_from_actuator(self)
                 else:
                     self.lock = False
 
             elif self.type == CC_ACTUATOR_CONTINUOUS:
-                pass
                 # check if actuator value has changed the minimum required value
                 delta = (self.max + self.min) * 0.01
                 if abs(self.last_value - self.value) >= delta:
                     self.last_value = self.value
-                    self.assignment.update_from_actuator(self)
-                    updated = True
+                    updated = self.assignment.update_from_actuator(self)
 
         return updated
 

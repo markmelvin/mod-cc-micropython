@@ -48,10 +48,12 @@ BYTES_PER_FRAME         = ((CC_FRAME_PERIOD * CC_BAUD_RATE_FALLBACK) / (1000000 
 
 # maximum number of updates which fit inside the frame
 # the update command has 6 bytes of overhead and each update data need 5 bytes
-MAX_UPDATES_PER_FRAME   = ((BYTES_PER_FRAME - 6) / 5)
+MAX_UPDATES_PER_FRAME   = int((BYTES_PER_FRAME - 6) // 5)
 
+# size of the sync message in bytes (sync + header + payload + crc)
+SYNC_SIZE_BYTES         = (1 + CC_MSG_HEADER_SIZE + 1 + 1)
 # size of the handshake message in bytes
-HANDSHAKE_SIZE_BYTES    = (CC_MSG_HEADER_SIZE + 2 + 7)
+HANDSHAKE_SIZE_BYTES    = (1 + CC_MSG_HEADER_SIZE + 7 + 1)
 
 # size of the handshake message in microseconds
 # FIXME: in the future change CC_BAUD_RATE_FALLBACK to CC_BAUD_RATE
