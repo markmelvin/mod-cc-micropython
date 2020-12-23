@@ -1,4 +1,4 @@
-set ST_FLASH=..\..\stlink-1.3.0-win64\bin\st-flash.exe
+set ST_FLASH=D:\programs\stlink-1.3.0-win64\bin\st-flash.exe
 set FIRMWARE0=..\micropython\ports\stm32\build-NUCLEO_F446RE\firmware0.bin
 set FIRMWARE1=..\micropython\ports\stm32\build-NUCLEO_F446RE\firmware1.bin
 

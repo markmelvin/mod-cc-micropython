@@ -22,7 +22,7 @@ I_AM_ALIVE_PERIOD       = 50      # in sync cycles
 
 # define firmware version
 CC_FIRMWARE_MAJOR       = 0
-CC_FIRMWARE_MINOR       = 1
+CC_FIRMWARE_MINOR       = 2
 CC_FIRMWARE_MICRO       = 0
 
 # protocol version

@@ -4,176 +4,148 @@ import pyb
 import machine
 import time
 import sys
-import _thread
 import math
 import gc
 from ucollections import deque
 
 sys.path.append('./')
 
-from py_cc.cc_protocol import CCDevice, CCSlave, CCActuator, \
+from py_cc.cc_protocol import CCDevice, CCSlave, CCActuator, CCAssignment, \
                               set_log_level, LOGLEVEL_DEBUG, LOGLEVEL_INFO
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, \
                                CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_SYNC_BYTE, \
-                               CC_MODE_FEEDBACK, SYNC_SIZE_BYTES
+                               CC_MODE_FEEDBACK, SYNC_SIZE_BYTES, CC_EV_UPDATE, \
+                               CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT, LISTENING_REQUESTS
+
+from utils.thread import Thread
+from utils.serial import SerialManager
 
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
-LED_PIN         = 1
+LED_DIO         = 'PA5'
 TIMER_NUMBER    = 2         # Timer2 is one of the high-speed timers
 UART_NUMBER     = 6         # UART6 is on PC6/7
 SERIAL_TX_EN    = 'PA10'    # Serial "is transmitting" pin
 
-FOOTSWITCH_DIOS = ['PB3', 'PB4', 'PB5', 'PB6']
 BUTTON_DEBOUNCE_CYCLES = 10
+# Footswitch inputs
+FOOTSWITCH_DIOS = ['PB3', 'PB5', 'PB4', 'PB10']
+# Corresponding indicator LED outputs
+INDICATOR_DIOS = ['PA8', 'PA9', 'PA7', 'PA6']
 
-RX_BUFFER_SIZE = 2048
-TX_BUFFER_SIZE = 128
-
-
-class Thread:
-    def __init__(self, group=None, target=None, name=None, args=(), kwargs=None):
-        self.target = target
-        self.args = args
-        self.kwargs = {} if kwargs is None else kwargs
-
-    def start(self):
-        _thread.start_new_thread(self.run, ())
-
-    def run(self):
-        self.target(*self.args, **self.kwargs)
+FOOTSWITCH_ACTUATOR_MIN = 0.0
+FOOTSWITCH_ACTUATOR_MAX = 1.0
 
 
-class SerialManager:
-    def __init__(self, recv_queue, send_queue):
-        # Serial TX enable pin
-        self.uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
-        self.tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
-        self.tx_en.off()
+class Async:
+    def tick(self,):
+        pass
 
-        self.recv_queue = recv_queue
-        self.send_queue = send_queue
 
-        self.lock = _thread.allocate_lock()
-        self.start_ptr = 0   # start of used data in the buffer
-        self.end_ptr = 0     # start of free space in the buffer
-        self.serial_monitor = Thread(target=self.handle_serial_traffic)
-        self.serial_monitor.start()
+class UpDownCounter(Async):
+    DIR_DOWN = 0
+    DIR_UP = 1
 
-    def handle_serial_traffic(self,):
-        # Allocate fixed buffers once up-front and use memoryviews
-        # to save on allocations and reduce memory fragmentation
-        _rx_buffer = bytearray(RX_BUFFER_SIZE)
-        _tx_buffer = bytearray(TX_BUFFER_SIZE)
+    def __init__(self, min, max):
+        self.value = 0
+        self.minimum = min
+        self.maximum = max
+        self.direction = self.DIR_UP
 
-        RX_BUF = memoryview(_rx_buffer)
-        TX_BUF = memoryview(_tx_buffer)
+    def tick(self,):
+        self.value = self.value + (1 if self.direction == self.DIR_UP else -1)
+        if self.value >= self.maximum:
+            self.direction = self.DIR_DOWN
+        elif self.value <= self.minimum:
+            self.direction = self.DIR_UP
 
-        while True:
-            # Check for new bytes
-            bytes_avail =  self.uart.any()
-            if bytes_avail > 0:
-                with self.lock:
-                    if self.start_ptr > self.end_ptr:
-                        free_space = (self.start_ptr - self.end_ptr)
-                    else:
-                        free_space = (RX_BUFFER_SIZE - (self.end_ptr - self.start_ptr))
 
-                    if free_space < bytes_avail:
-                        #TODO - handle failure in a robust manner
-                        print("ERROR: Losing %d bytes of data!" % (bytes_avail - free_space))
+class HandshakingIndicatorDriver(Async):
+    MIN = 0
+    MAX = 2**15
 
-                    bytes_to_read = min(bytes_avail, free_space)
-                    overflow = (self.end_ptr + bytes_to_read) - RX_BUFFER_SIZE
-                    if overflow > 0:
-                        # Split into memory views that don't cross buffer boundary
-                        buf = RX_BUF[self.end_ptr:]
-                        self._fill(buf)
-                        self.recv_queue.append((self.end_ptr, buf))
+    def __init__(self, indicators):
+        self.indicators = indicators
+        self.width = (self.MAX - self.MIN) / len(self.indicators)
+        self.counter = UpDownCounter(min=self.MIN, max=self.MAX)
 
-                        # Update final end pointer
-                        self.end_ptr = overflow
-                        buf = RX_BUF[0:self.end_ptr]
-                        self._fill(buf)
-                        self.recv_queue.append((0, buf))
+    def tick(self,):
+        self.counter.tick()
+        self.update_indicators()
 
-                    else:
-                        buf = RX_BUF[self.end_ptr:self.end_ptr + bytes_to_read]
-                        self._fill(buf)
-                        self.recv_queue.append((self.end_ptr, buf))
-                        self.end_ptr += bytes_to_read
-                        if self.end_ptr == RX_BUFFER_SIZE:
-                            self.end_ptr = 0
-
-            # Service any queued messages to be sent
-            if len(self.send_queue) > 0:
-                # Enable serial TX
-                self.tx_en.on()
-                # TODO - Figure out what this should be...
-                time.sleep_us(300)
-                message = self.send_queue.popleft()
-                num_tx_bytes = message.get_tx_bytes(TX_BUF[0:])
-                bytes_written = 0
-                while bytes_written < num_tx_bytes:
-                    print("Sending: %s" % [w for w in TX_BUF[bytes_written:num_tx_bytes]])
-                    bytes_written += self.uart.write(TX_BUF[bytes_written:num_tx_bytes])
-                self.tx_en.off()
-                del message
-
-    def _fill(self, buffer):
-        length = len(buffer)
-        remaining = length
-        while remaining > 0:
-            _read = self.uart.readinto(buffer[length-remaining:], remaining)
-            remaining -= _read
-
-    def free(self, idx, _len):
-        with self.lock:
-            # Adjust start pointer based on memory we're freeing
-            overflow = (self.start_ptr + _len) - RX_BUFFER_SIZE
-            if overflow >= 0:
-                self.start_ptr = overflow
+    def update_indicators(self,):
+        # Sweep an LED back and forth
+        for i, indicator in enumerate(self.indicators):
+            if self.counter.value >= (i * self.width) and self.counter.value <= (i + 1 * self.width):
+                indicator.on()
             else:
-                self.start_ptr += _len
+                indicator.off()
+
+
+class MomentaryButton:
+    def __init__(self, dio):
+        self.pin = machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP)
+        self.value = False
+        self.last_pressed = time.ticks_ms()
+        self.interval_ms = 0
+
+    def update(self, value):
+        if value and not self.is_pressed:
+            # Rising edge
+            now = time.ticks_ms()
+            self.interval_ms = time.ticks_diff(now, self.last_pressed)
+            self.last_pressed = now
+
+        self.value = True if value else False
+
+    @property
+    def pin_value(self,):
+        return self.pin.value()
+
+    @property
+    def is_pressed(self,):
+        return self.value is True
+
+    @property
+    def tap_tempo(self,):
+        # Return BPM
+        return 60 * 1000 / self.interval_ms
 
 
 class Footswitch:
-    def __init__(self, led):
-        self.led = led
-        self.analog = 0.0
+    def __init__(self):
         self.last_tick = time.ticks_ms()
-        self.last_analog_change = time.ticks_ms()
-
+        self.connected = False
         self.switches = []
+        self.indicators = []
+
         # Configure actuators
         actuators = []
         for i, dio in enumerate(FOOTSWITCH_DIOS):
-            # Configure the DIO
-            self.switches.append(machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP))
+            # Configure the DIOs
+            self.switches.append(MomentaryButton(dio))
             # Add it as an actuator
             actuators.append(CCActuator(i,
                                         "Foot #%d" % (i+1),
                                         CC_ACTUATOR_MOMENTARY,
-                                        0.0, 1.0,
+                                        FOOTSWITCH_ACTUATOR_MIN, FOOTSWITCH_ACTUATOR_MAX,
                                         CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS,
                                         max_assignments=1))
+            # Add a corresponding LED (the "ID" of the actuator corresponds to the index
+            # of its switch and indicator in their respective arrays)
+            self.indicators.append(machine.Pin(INDICATOR_DIOS[i], machine.Pin.OUT))
 
-        # Append a simulated analog signal (continuous sine wave)
-        actuators.append(CCActuator(len(FOOTSWITCH_DIOS),
-                                    "Sine Wave",
-                                    CC_ACTUATOR_CONTINUOUS,
-                                    0.0, 1.0,
-                                    CC_MODE_REAL | CC_MODE_OPTIONS | CC_MODE_FEEDBACK,
-                                    max_assignments=1))
+        self.state_indicator = HandshakingIndicatorDriver(self.indicators)
 
         # Device and control chain slave
-        self.device = CCDevice("Python Footswitch!", "http://audiofab.com", actuators=actuators)
+        self.device = CCDevice("Audiofab Footswitch", "http://audiofab.com", actuators=actuators)
         self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
         self.send_queue = deque((), 50)
         self.receive_queue = deque((), 50)
-        self.footswitch_values = [False]*len(self.switches)
 
-        self.serial = SerialManager(self.receive_queue, self.send_queue)
+        uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
+        tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
+        self.serial = SerialManager(self.receive_queue, self.send_queue, uart, tx_en)
         self.button_monitor = Thread(target=self.monitor_buttons)
         self.button_monitor.start()
 
@@ -181,22 +153,31 @@ class Footswitch:
         self.send_queue.append(message)
 
     def events_cb(self, event):
-        print("Got Event: ", event.__dict__)
+        # print("Got event: ", event.__dict__)
+        if event.id == CC_EV_UPDATE or event.id == CC_EV_ASSIGNMENT:
+            if isinstance(event.data, CCAssignment):
+                if event.data.id in self.device.assignments:
+                    self.update_indicator_for_assignment(event.data)
+
+        elif event.id == CC_EV_UNASSIGNMENT:
+            if isinstance(event.data, CCAssignment):
+                self.indicators[assignment.actuator_id].off()
 
     def process(self,):
         now = time.ticks_ms()
 
         self.process_recv_queue()
 
-        for i, pressed in enumerate(self.footswitch_values):
-            self.device.actuators[i].value = 1.0 if pressed else 0.0
+        if not self.connected and self.cc_slave.comm_state == LISTENING_REQUESTS:
+            self.connected = True
+            # We're connected so let the actuator state control the indicators
+            self.state_indicator = None
 
-        if time.ticks_diff(now, self.last_analog_change) > 50:
-            self.analog += 0.01
-            if self.analog > math.pi:
-                self.analog = 0.0
-            self.device.actuators[len(self.footswitch_values)].value = math.sin(self.analog)
-            self.last_analog_change = now
+        for i, switch in enumerate(self.switches):
+            self.device.actuators[i].value = FOOTSWITCH_ACTUATOR_MAX if switch.is_pressed else FOOTSWITCH_ACTUATOR_MIN
+
+        if isinstance(self.state_indicator, Async):
+            self.state_indicator.tick()
 
         self.last_tick = now
         self.cc_slave.process()
@@ -205,6 +186,7 @@ class Footswitch:
         while len(self.receive_queue) > 0:
             start_index, data = self.receive_queue.popleft()
             messages = self.cc_slave.protocol.receive_data(data)
+            # TODO: Remove this buffer state management from the user-exposed class
             # Free data in circular buffer
             self.serial.free(start_index, len(data))
             if messages is not None:
@@ -212,25 +194,39 @@ class Footswitch:
                     self.cc_slave.handle_message(msg)
 
     def monitor_buttons(self,):
+        '''
+        Runs in a background thread to debounce the footswtich buttons
+        '''
         button_history = [
             [1]*BUTTON_DEBOUNCE_CYCLES for w in self.switches
         ]
 
         while True:
             for i, switch in enumerate(self.switches):
-                button_history[i].append(switch.value())
+                button_history[i].append(switch.pin_value)
                 if len(button_history[i]) > BUTTON_DEBOUNCE_CYCLES:
                     _ = button_history[i].pop(0)
                 if 1 not in button_history[i]:
-                    self.footswitch_values[i] = True
+                    self.switches[i].update(True)
                 elif 0 not in button_history[i]:
-                    self.footswitch_values[i] = False
+                    self.switches[i].update(False)
                 # else leave state as it was
             time.sleep_ms(1)
 
+    def update_indicator_for_assignment(self, assignment):
+        if assignment.mode & (CC_MODE_TRIGGER | CC_MODE_OPTIONS):
+            self.indicators[assignment.actuator_id].on()
+
+        elif assignment.mode & CC_MODE_TOGGLE:
+            if assignment.value:
+                self.indicators[assignment.actuator_id].on()
+            else:
+                self.indicators[assignment.actuator_id].off()
+
 
 def main():
-    led = pyb.LED(LED_PIN)
+    # LED on evaluation board
+    led = machine.Pin(LED_DIO, machine.Pin.OUT)
 
     # Flash LED on startup
     led.on()
@@ -238,7 +234,7 @@ def main():
     led.off()
 
     print("Starting footswitch firmware!")
-    footswitch = Footswitch(led)
+    footswitch = Footswitch()
 
     while True:
         footswitch.process()

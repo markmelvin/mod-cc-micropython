@@ -1,5 +1,3 @@
-** THIS IS A WORK IN PROGRESS **
-
 # mod-cc-micropython
 A micropython module implementing the moddevices control chain protocol (currently on an STM32 development board).
 
@@ -9,6 +7,16 @@ The code currently handshakes and will show actuators in the Mod Duo(X) UI, but 
 # Running on an STM32 NUCLEO-F446RE development board
 
 Currently this project runs on an ST Microelectronics NUCLEO-F446RE development board with a [moddevices Arduino shield](https://www.moddevices.com/products/arduino-shield) attached.
+
+## Dependencies
+
+https://www.st.com/en/development-tools/stsw-link009.html
+
+https://github.com/dhylands/rshell
+
+https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads
+
+https://github.com/stlink-org/stlink/releases/tag/v1.3.0
 
 ## Required micropython configuration
 
