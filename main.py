@@ -37,12 +37,7 @@ FOOTSWITCH_ACTUATOR_MIN = 0.0
 FOOTSWITCH_ACTUATOR_MAX = 1.0
 
 
-class Async:
-    def tick(self,):
-        pass
-
-
-class UpDownCounter(Async):
+class UpDownCounter:
     DIR_DOWN = 0
     DIR_UP = 1
 
@@ -60,9 +55,9 @@ class UpDownCounter(Async):
             self.direction = self.DIR_UP
 
 
-class HandshakingIndicatorDriver(Async):
+class HandshakingIndicatorDriver:
     MIN = 0
-    MAX = 2**15
+    MAX = 512   # Set according to loop speed (how fast .tick() is called)
 
     def __init__(self, indicators):
         self.indicators = indicators
@@ -160,8 +155,7 @@ class Footswitch:
                     self.update_indicator_for_assignment(event.data)
 
         elif event.id == CC_EV_UNASSIGNMENT:
-            if isinstance(event.data, CCAssignment):
-                self.indicators[assignment.actuator_id].off()
+            self.indicators[event.data].off()
 
     def process(self,):
         now = time.ticks_ms()
@@ -176,7 +170,7 @@ class Footswitch:
         for i, switch in enumerate(self.switches):
             self.device.actuators[i].value = FOOTSWITCH_ACTUATOR_MAX if switch.is_pressed else FOOTSWITCH_ACTUATOR_MIN
 
-        if isinstance(self.state_indicator, Async):
+        if self.state_indicator is not None:
             self.state_indicator.tick()
 
         self.last_tick = now
