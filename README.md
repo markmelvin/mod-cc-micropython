@@ -69,11 +69,11 @@ There are two steps to flashing the firmware:
 
 If using an ST Microelectronics NUCLEO-F446RE development board, you can use the provided images for the micropython runtime. If you have compiled micropython from scratch, follow the micropython directions for your board to flash the micropython runtime onto your device.
 
-There is a script in the root folder [./flash_micropython.bat] that uses a locally-installed `st-flash.exe` utility to flash the micropython firmware onto the device (assumes the ST-LINK driver is installed and the board is plugged in).
+There is [a script in the root folder](./flash_micropython.bat) that uses a locally-installed `st-flash.exe` utility to flash the micropython firmware onto the device (assumes the ST-LINK driver is installed and the board is plugged in).
 
 ### Flashing the user program (written in Python)
 
-Your user-program is written in pure micropython and is flashed separately from the micropython runtime. This is done with a simple serial connection to the micropython REPL using a utility called [rshell](https://github.com/dhylands/rshell). This must be installed and there are a couple of scripts provided to flash the user program onto the device. [./flash_pyfootswitch.bat] will flash all of the firmware (control chain protocol module and other helper modules) to the device as well as the main user program (`main.py`). This only needs to be done once (or whenever a helper module changes). The other script - [./flash_main_py.bat] - flashes the main user program to the device. Typically this all you need to flash on a regular basis during development.
+Your user-program is written in pure micropython and is flashed separately from the micropython runtime. This is done with a simple serial connection to the micropython REPL using a utility called [rshell](https://github.com/dhylands/rshell). This must be installed and there are a couple of scripts provided to flash the user program onto the device. [flash_pyfootswitch.bat](./flash_pyfootswitch.bat) will flash all of the firmware (control chain protocol module and other helper modules) to the device as well as the main user program (`main.py`). This only needs to be done once (or whenever a helper module changes). The other script - [flash_main_py.bat](./flash_main_py.bat) - flashes the main user program to the device. Typically this all you need to flash on a regular basis during development.
 
 Once everything has been flashed, you can plug your "footswitch" into your Mod Duo(X) and you should see it detected in the Mod web GUI!
 
