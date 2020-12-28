@@ -6,20 +6,17 @@ import time
 import sys
 import math
 import gc
-from ucollections import deque
 
 sys.path.append('./')
 
-from py_cc.cc_protocol import CCDevice, CCSlave, CCActuator, CCAssignment, \
-                              set_log_level, LOGLEVEL_DEBUG, LOGLEVEL_INFO
+from py_cc.cc_protocol import CCActuator, CCAssignment, set_log_level, LOGLEVEL_DEBUG, LOGLEVEL_INFO
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, \
-                               CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_SYNC_BYTE, \
-                               CC_MODE_FEEDBACK, SYNC_SIZE_BYTES, CC_EV_UPDATE, \
-                               CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT, LISTENING_REQUESTS
+                               CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_MODE_FEEDBACK, \
+                               CC_EV_UPDATE, CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT
 
 from utils.thread import Thread
-from utils.serial import SerialManager
+from utils.control_chain import ControlChainSlaveDevice
 
 DEVICE_NAME = "Audiofab Footswitch"
 DEVICE_URL = "http://audiofab.com"
@@ -135,20 +132,18 @@ class Footswitch:
 
         self.state_indicator = HandshakingIndicatorDriver(self.indicators)
 
-        # Device and control chain slave
-        self.device = CCDevice(DEVICE_NAME, DEVICE_URL, actuators=actuators)
-        self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
-        self.send_queue = deque((), 50)
-        self.receive_queue = deque((), 50)
-
+        # Create the underlying Control Chain device slave
+        # NOTE: We use pyb.Timer here and not machine.Timer so we can specify one of the high-speed timers
+        timer = pyb.Timer(TIMER_NUMBER)
         uart = machine.UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
         tx_en = machine.Pin(SERIAL_TX_EN, machine.Pin.OUT)
-        self.serial = SerialManager(self.receive_queue, self.send_queue, uart, tx_en)
+        self.device = ControlChainSlaveDevice(DEVICE_NAME, DEVICE_URL, actuators,
+                                              timer, uart, tx_en,
+                                              events_callback=self.events_cb)
+
         self.button_monitor = Thread(target=self.monitor_buttons)
         self.button_monitor.start()
 
-    def response_cb(self, message):
-        self.send_queue.append(message)
 
     def events_cb(self, event):
         # print("Got event: ", event.__dict__)
@@ -160,12 +155,15 @@ class Footswitch:
         elif event.id == CC_EV_UNASSIGNMENT:
             self.indicators[event.data].off()
 
-    def process(self,):
+    def mainloop(self,):
         now = time.ticks_ms()
 
-        self.process_recv_queue()
+        # Tell the device to process any messages in its receive queue
+        # (MUST be called once in the main loop, ideally at the start)
+        self.device.process_messages()
 
-        if not self.connected and self.cc_slave.comm_state == LISTENING_REQUESTS:
+        # Handle the transition from handshaking to connected (clearing the LEDs)
+        if not self.connected and self.device.is_connected:
             self.connected = True
             # Turn off all LEDs
             for indicator in self.indicators:
@@ -173,25 +171,19 @@ class Footswitch:
             # We're connected so let the actuator state control the indicators
             self.state_indicator = None
 
+        # Process the switch values and update their underlying indicator values
         for i, switch in enumerate(self.switches):
             self.device.actuators[i].value = FOOTSWITCH_ACTUATOR_MAX if switch.is_pressed else FOOTSWITCH_ACTUATOR_MIN
 
+        # Update the indicators, when appropriate
         if self.state_indicator is not None:
             self.state_indicator.tick()
 
         self.last_tick = now
-        self.cc_slave.process()
 
-    def process_recv_queue(self,):
-        while len(self.receive_queue) > 0:
-            start_index, data = self.receive_queue.popleft()
-            messages = self.cc_slave.protocol.receive_data(data)
-            # TODO: Remove this buffer state management from the user-exposed class
-            # Free data in circular buffer
-            self.serial.free(start_index, len(data))
-            if messages is not None:
-                for msg in messages:
-                    self.cc_slave.handle_message(msg)
+        # Tell the device to update itself based on any actuator state changes
+        # (MUST be called once in the main loop, ideally at the end after updating any actuator values)
+        self.device.update()
 
     def monitor_buttons(self,):
         '''
@@ -237,7 +229,7 @@ def main():
     footswitch = Footswitch()
 
     while True:
-        footswitch.process()
+        footswitch.mainloop()
 
 
 if __name__ == "__main__":

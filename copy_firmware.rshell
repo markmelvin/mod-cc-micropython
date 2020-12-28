@@ -11,7 +11,7 @@ cp ./py_cc/crc8.mpy /flash/py_cc
 
 cp ./utils/__init__.py /flash/utils
 cp ./utils/thread.mpy /flash/utils
-cp ./utils/serial.mpy /flash/utils
+cp ./utils/control_chain.mpy /flash/utils
 
 cp main.py /flash
 

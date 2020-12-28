@@ -1,19 +1,31 @@
 import _thread
 import time
+import machine
+from ucollections import deque
+
 from .thread import Thread
+
+from py_cc.cc_protocol import CCDevice, CCSlave
+from py_cc.cc_constants import LISTENING_REQUESTS
 
 RX_BUFFER_SIZE = 2048
 TX_BUFFER_SIZE = 128
 
-class SerialManager:
-    def __init__(self, recv_queue, send_queue, uart, tx_en_pin):
+
+class ControlChainSlaveDevice:
+    def __init__(self, name, url, actuators, timer, uart, tx_en, events_callback=None):
+        self.events_cb = events_callback
+
         # Serial TX enable pin
         self.uart = uart
-        self.tx_en = tx_en_pin
+        self.tx_en = tx_en
         self.tx_en.off()
 
-        self.recv_queue = recv_queue
-        self.send_queue = send_queue
+        self.send_queue = deque((), 50)
+        self.recv_queue = deque((), 50)
+
+        self.cc_device = CCDevice(name, url, actuators=actuators)
+        self.cc_slave = CCSlave(self.on_response, self.on_event, timer, self.cc_device)
 
         self.lock = _thread.allocate_lock()
         self.start_ptr = 0   # start of used data in the buffer
@@ -96,3 +108,45 @@ class SerialManager:
                 self.start_ptr = overflow
             else:
                 self.start_ptr += _len
+
+    # Callbacks
+    def on_response(self, message):
+        self.send_queue.append(message)
+
+    def on_event(self, event):
+        if self.events_cb is not None:
+            self.events_cb(event)
+
+    #########################
+    # User-exposed API calls
+    #########################
+    def process_messages(self,):
+        '''
+        Process the receive queue and handle any queued messages found in it.
+        '''
+        while len(self.recv_queue) > 0:
+            start_index, data = self.recv_queue.popleft()
+            messages = self.cc_slave.protocol.receive_data(data)
+            # Free data in circular buffer
+            self.free(start_index, len(data))
+            if messages is not None:
+                for msg in messages:
+                    self.cc_slave.handle_message(msg)
+
+    def update(self,):
+        '''
+        Handle any actuator state changes and fire events as appropriate.
+        '''
+        self.cc_slave.process()
+
+    @property
+    def is_connected(self,):
+        return self.cc_slave.comm_state == LISTENING_REQUESTS
+
+    @property
+    def assignments(self,):
+        return self.cc_device.assignments
+
+    @property
+    def actuators(self,):
+        return self.cc_device.actuators

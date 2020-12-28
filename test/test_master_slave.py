@@ -1,3 +1,5 @@
+## WARNING: This file may be severely out of date (and may be deleted at some point)
+
 import time
 import sys
 import _thread

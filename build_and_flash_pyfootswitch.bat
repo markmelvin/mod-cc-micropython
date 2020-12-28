@@ -10,7 +10,7 @@ wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./py_cc/cc_constants.py
 wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./py_cc/cc_classes.py
 wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./py_cc/cc_protocol.py
 
-wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./utils/serial.py
+wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./utils/control_chain.py
 wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./utils/thread.py
 
 rshell -p %COM_PORT% -f copy_firmware.rshell
