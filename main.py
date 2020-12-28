@@ -71,7 +71,7 @@ class HandshakingIndicatorDriver:
     def update_indicators(self,):
         # Sweep an LED back and forth
         for i, indicator in enumerate(self.indicators):
-            if self.counter.value >= (i * self.width) and self.counter.value <= (i + 1 * self.width):
+            if self.counter.value >= (i * self.width) and self.counter.value <= ((i + 1) * self.width):
                 indicator.on()
             else:
                 indicator.off()
@@ -164,6 +164,9 @@ class Footswitch:
 
         if not self.connected and self.cc_slave.comm_state == LISTENING_REQUESTS:
             self.connected = True
+            # Turn off all LEDs
+            for indicator in self.indicators:
+                indicator.off()
             # We're connected so let the actuator state control the indicators
             self.state_indicator = None
 
