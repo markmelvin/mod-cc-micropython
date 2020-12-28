@@ -21,6 +21,9 @@ from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
 from utils.thread import Thread
 from utils.serial import SerialManager
 
+DEVICE_NAME = "Audiofab Footswitch"
+DEVICE_URL = "http://audiofab.com"
+
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
 LED_DIO         = 'PA5'
 TIMER_NUMBER    = 2         # Timer2 is one of the high-speed timers
@@ -133,7 +136,7 @@ class Footswitch:
         self.state_indicator = HandshakingIndicatorDriver(self.indicators)
 
         # Device and control chain slave
-        self.device = CCDevice("Audiofab Footswitch", "http://audiofab.com", actuators=actuators)
+        self.device = CCDevice(DEVICE_NAME, DEVICE_URL, actuators=actuators)
         self.cc_slave = CCSlave(self.response_cb, self.events_cb, pyb.Timer(TIMER_NUMBER), self.device)
         self.send_queue = deque((), 50)
         self.receive_queue = deque((), 50)
