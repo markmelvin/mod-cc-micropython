@@ -1,7 +1,7 @@
 # micropython-based footswitch using the moddevices Arduino shield
 # attached to an STM32 Nucleo development board (NUCLEO-F-446RE)
-import pyb
 import machine
+import pyb
 import time
 import sys
 import math
@@ -11,15 +11,14 @@ sys.path.append('./')
 
 from py_cc.cc_protocol import CCActuator, CCAssignment, set_log_level, LOGLEVEL_DEBUG, LOGLEVEL_INFO
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
-                               CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, \
-                               CC_ACTUATOR_CONTINUOUS, CC_MODE_REAL, CC_MODE_FEEDBACK, \
-                               CC_EV_UPDATE, CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT
+                               CC_MODE_MOMENTARY, CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, CC_MODE_TAP_TEMPO, \
+                               CC_EV_UPDATE, CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT, CC_EV_MASTER_RESETED, CC_EV_SET_VALUE
 
 from utils.thread import Thread
 from utils.control_chain import ControlChainSlaveDevice
 
 DEVICE_NAME = "Audiofab Footswitch"
-DEVICE_URL = "http://audiofab.com"
+DEVICE_URL = "https://github.com/markmelvin/mod-cc-micropython"
 
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
 LED_DIO         = 'PA5'
@@ -35,7 +34,6 @@ INDICATOR_DIOS = ['PA8', 'PA9', 'PA7', 'PA6']
 
 FOOTSWITCH_ACTUATOR_MIN = 0.0
 FOOTSWITCH_ACTUATOR_MAX = 1.0
-
 
 class UpDownCounter:
     DIR_DOWN = 0
@@ -78,6 +76,9 @@ class HandshakingIndicatorDriver:
 
 
 class MomentaryButton:
+    MIN_INTERVAL_MS = 100
+    MAX_INTERVAL_MS = 3000
+
     def __init__(self, dio):
         self.pin = machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP)
         self.value = False
@@ -88,7 +89,17 @@ class MomentaryButton:
         if value and not self.is_pressed:
             # Rising edge
             now = time.ticks_ms()
-            self.interval_ms = time.ticks_diff(now, self.last_pressed)
+
+            # Update the running average interval between button presses
+            delta = time.ticks_diff(now, self.last_pressed)
+            if delta >= self.MIN_INTERVAL_MS and delta < self.MAX_INTERVAL_MS:
+                if self.interval_ms > 0:
+                    self.interval_ms = (self.interval_ms + delta) / 2.0
+                else:
+                    self.interval_ms = delta
+            elif delta >= self.MAX_INTERVAL_MS:
+                self.interval_ms = 0
+
             self.last_pressed = now
 
         self.value = True if value else False
@@ -102,9 +113,10 @@ class MomentaryButton:
         return self.value is True
 
     @property
-    def tap_tempo(self,):
-        # Return BPM
-        return 60 * 1000 / self.interval_ms
+    def tap_tempo_ms(self,):
+        if self.interval_ms < self.MIN_INTERVAL_MS or self.interval_ms > self.MAX_INTERVAL_MS:
+            return self.MAX_INTERVAL_MS
+        return self.interval_ms
 
 
 class Footswitch:
@@ -124,7 +136,7 @@ class Footswitch:
                                         "Foot #%d" % (i+1),
                                         CC_ACTUATOR_MOMENTARY,
                                         FOOTSWITCH_ACTUATOR_MIN, FOOTSWITCH_ACTUATOR_MAX,
-                                        CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS,
+                                        CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS, # | CC_MODE_TAP_TEMPO | CC_MODE_MOMENTARY,
                                         max_assignments=1))
             # Add a corresponding LED (the "ID" of the actuator corresponds to the index
             # of its switch and indicator in their respective arrays)
@@ -146,14 +158,28 @@ class Footswitch:
 
 
     def events_cb(self, event):
-        # print("Got event: ", event.__dict__)
-        if event.id == CC_EV_UPDATE or event.id == CC_EV_ASSIGNMENT:
+        print("Got event: ", event.__dict__)
+        if event.id == CC_EV_UPDATE:
+            if isinstance(event.data, CCAssignment):
+                self.update_indicator_for_assignment(event.data)
+
+        elif event.id == CC_EV_ASSIGNMENT:
+            # TODO: Handle tap tempo!
+
             if isinstance(event.data, CCAssignment):
                 if event.data.id in self.device.assignments:
                     self.update_indicator_for_assignment(event.data)
 
         elif event.id == CC_EV_UNASSIGNMENT:
             self.indicators[event.data].off()
+
+        elif event.id == CC_EV_SET_VALUE:
+            if isinstance(event.data, CCMsgSetValue):
+                self.update_indicator_for_assignment_id(event.data.assignment_id)
+
+        elif event.id == CC_EV_MASTER_RESETED:
+            self.reset()
+
 
     def mainloop(self,):
         now = time.ticks_ms()
@@ -185,6 +211,7 @@ class Footswitch:
         # (MUST be called once in the main loop, ideally at the end after updating any actuator values)
         self.device.update()
 
+
     def monitor_buttons(self,):
         '''
         Runs in a background thread to debounce the footswtich buttons
@@ -205,15 +232,29 @@ class Footswitch:
                 # else leave state as it was
             time.sleep_ms(1)
 
+    def reset(self,):
+        # TODO: What else do we do here?
+        # Turn off all LEDs
+        for indicator in self.indicators:
+            indicator.off()
+
+    def update_indicator_for_assignment_id(self, assignment_id):
+        self.update_indicator_for_assignment(self.device.assignments.get(assignment_id))
+
     def update_indicator_for_assignment(self, assignment):
+        if assignment is None:
+            return
+
         if assignment.mode & (CC_MODE_TRIGGER | CC_MODE_OPTIONS):
             self.indicators[assignment.actuator_id].on()
 
         elif assignment.mode & CC_MODE_TOGGLE:
-            if assignment.value:
-                self.indicators[assignment.actuator_id].on()
-            else:
-                self.indicators[assignment.actuator_id].off()
+            self.indicators[assignment.actuator_id].on() if assignment.value else self.indicators[assignment.actuator_id].off()
+        elif assignment.mode & CC_MODE_TAP_TEMPO:
+            # TODO: Implement a flashing light for tap-tempo
+            pass
+        elif assignment.mode & CC_MODE_MOMENTARY:
+            self.indicators[assignment.actuator_id].on() if assignment.value else self.indicators[assignment.actuator_id].off()
 
 
 def main():

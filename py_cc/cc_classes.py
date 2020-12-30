@@ -126,21 +126,51 @@ class CCAssignment:
         list_count = len(self.list_items)
 
         if actuator.type == CC_ACTUATOR_MOMENTARY:
-            if self.mode & CC_MODE_OPTIONS:
-                self.list_index += 1
-                if self.list_index >= list_count:
-                    self.list_index = 0
-                self.value = self.list_items[self.list_index].value
+            if self.mode & CC_MODE_TAP_TEMPO:
+                delta = (actuator.max + actuator.min) * 0.01
+                if abs(actuator.last_value - actuator.value) < delta:
+                    return False
+                
+                actuator.last_value = actuator.value
+                self.value = actuator.value
+                return True
 
-            else:
-                if self.mode & CC_MODE_TRIGGER:
-                    self.value = self.max
-                elif self.mode & CC_MODE_TOGGLE:
+            if self.mode & CC_MODE_MOMENTARY:
+                if actuator.value != self.value:
                     self.value = 1.0 - self.value
+                    return True
+                else:
+                    return False
 
-            return True
+            if actuator.value > 0.0:
+                if not actuator.lock:
+                    actuator.lock = True
+
+                    if self.mode & CC_MODE_OPTIONS:
+                        self.list_index += 1
+                        if self.list_index >= list_count:
+                            self.list_index = 0
+                        self.value = self.list_items[self.list_index].value
+                        return True
+
+                    if self.mode & CC_MODE_TRIGGER:
+                        self.value = self.max
+                    elif self.mode & CC_MODE_TOGGLE:
+                        self.value = 1.0 - self.value
+
+                    return True
+            else:
+                actuator.lock = False
+
+            return False
 
         elif actuator.type == CC_ACTUATOR_CONTINUOUS:
+            delta = (actuator.max + actuator.min) * 0.01
+            if abs(actuator.last_value - actuator.value) < delta:
+                return False
+
+            actuator.last_value = actuator.value
+
             # toggle and trigger modes
             if self.mode & CC_MODE_TOGGLE or self.mode & CC_MODE_TRIGGER:
                 middle = (actuator.max + actuator.min) / 2.0
@@ -166,7 +196,7 @@ class CCAssignment:
             value = a*actuator.value + b
 
             # real mode
-            if self.mode & CC_MODE_REAL:
+            if self.mode & CC_MODE_REAL or self.mode & CC_MODE_TAP_TEMPO:
                 self.value = value
                 return True
 
@@ -213,20 +243,7 @@ class CCActuator:
     def check_for_updates(self,):
         updated = False
         if self.assignment is not None:
-            if self.type == CC_ACTUATOR_MOMENTARY:
-                if self.value > 0.0:
-                    if not self.lock:
-                        self.lock = True
-                        updated = self.assignment.update_from_actuator(self)
-                else:
-                    self.lock = False
-
-            elif self.type == CC_ACTUATOR_CONTINUOUS:
-                # check if actuator value has changed the minimum required value
-                delta = (self.max + self.min) * 0.01
-                if abs(self.last_value - self.value) >= delta:
-                    self.last_value = self.value
-                    updated = self.assignment.update_from_actuator(self)
+            updated = self.assignment.update_from_actuator(self)
 
         return updated
 
@@ -439,6 +456,21 @@ class CCMsgUnassignment(CCMsg):
     def _get_data_payload(self, buffer):
         buffer[0] = self.assignment_id
         return 1
+
+class CCMsgSetValue(CCMsg):
+    def get_command(self,):
+        return CC_CMD_SET_VALUE
+
+    def _decode(self, data):
+        self.assignment_id = data[0]
+        self.actuator_id = data[1]
+        self.value = struct.unpack('f', bytes(data[2:]))[0]
+
+    def _get_data_payload(self, buffer):
+        buffer[0] = self.assignment_id
+        buffer[1] = self.actuator_id
+        struct.pack_into('f', buffer, 2, self.value)
+        return 2 + SIZEOF_FLOAT
 
 class CCMsgSync(CCMsg):
     def get_command(self,):

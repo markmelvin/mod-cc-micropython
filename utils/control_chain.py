@@ -23,6 +23,7 @@ class ControlChainSlaveDevice:
 
         self.send_queue = deque((), 50)
         self.recv_queue = deque((), 50)
+        self.event_queue = deque((), 50)
 
         self.cc_device = CCDevice(name, url, actuators=actuators)
         self.cc_slave = CCSlave(self.on_response, self.on_event, timer, self.cc_device)
@@ -45,7 +46,7 @@ class ControlChainSlaveDevice:
         while True:
             # Check for new bytes
             bytes_avail =  self.uart.any()
-            if bytes_avail > 0:
+            while bytes_avail > 0:
                 with self.lock:
                     if self.start_ptr > self.end_ptr:
                         free_space = (self.start_ptr - self.end_ptr)
@@ -77,6 +78,8 @@ class ControlChainSlaveDevice:
                         self.end_ptr += bytes_to_read
                         if self.end_ptr == RX_BUFFER_SIZE:
                             self.end_ptr = 0
+
+                    bytes_avail =  self.uart.any()
 
             # Service any queued messages to be sent
             if len(self.send_queue) > 0:
@@ -114,8 +117,7 @@ class ControlChainSlaveDevice:
         self.send_queue.append(message)
 
     def on_event(self, event):
-        if self.events_cb is not None:
-            self.events_cb(event)
+        self.event_queue.append(event)
 
     #########################
     # User-exposed API calls
@@ -132,6 +134,12 @@ class ControlChainSlaveDevice:
             if messages is not None:
                 for msg in messages:
                     self.cc_slave.handle_message(msg)
+
+        # Process any events that happened as a result
+        while len(self.event_queue) > 0:
+            event = self.event_queue.popleft()
+            if self.events_cb is not None:
+                self.events_cb(event)
 
     def update(self,):
         '''
