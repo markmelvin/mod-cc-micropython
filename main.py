@@ -36,16 +36,44 @@ assert len(FOOTSWITCH_DIOS) == len(INDICATOR_DIOS)
 FOOTSWITCH_ACTUATOR_MIN = 0.0
 FOOTSWITCH_ACTUATOR_MAX = 1.0
 
+TAP_TEMPO_ON_MS = 50
+TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS = 100
+TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS = 3000
+
+
+def convert_to_ms(value, source_units):
+    units_lower = source_units.lower()
+    if units_lower == "bpm":
+        return 60000.0 / max(value, 0.1)
+    elif units_lower == "hz":
+        return 1000.0 / max(value, 0.1)
+    elif units_lower == "s":
+        return value * 1000.0
+    elif units_lower == "ms":
+        return value
+    return 0.0
+
+def convert_from_ms(value, desired_units):
+    units_lower = desired_units.lower()
+    if units_lower == "bpm":
+        return 60000.0 * value
+    elif units_lower == "hz":
+        return 1000.0 * value
+    elif units_lower == "s":
+        return value / 1000.0
+    elif units_lower == "ms":
+        return value
+    return 0.0
+
 
 class MomentaryButton:
-    MIN_INTERVAL_MS = 100
-    MAX_INTERVAL_MS = 3000
-
     def __init__(self, dio):
         self.pin = machine.Pin(dio, machine.Pin.IN, machine.Pin.PULL_UP)
         self.value = False
         self.last_pressed = time.ticks_ms()
         self.interval_ms = 0
+        self.min_interval_ms = TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS
+        self.max_interval_ms = TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS
 
     def set_value(self, value):
         if value and not self.is_pressed:
@@ -54,17 +82,21 @@ class MomentaryButton:
 
             # Update the running average interval between button presses
             delta = time.ticks_diff(now, self.last_pressed)
-            if delta >= self.MIN_INTERVAL_MS and delta < self.MAX_INTERVAL_MS:
+            if delta >= self.min_interval_ms and delta < self.max_interval_ms:
                 if self.interval_ms > 0:
                     self.interval_ms = (self.interval_ms + delta) / 2.0
                 else:
                     self.interval_ms = delta
-            elif delta >= self.MAX_INTERVAL_MS:
+            elif delta >= self.max_interval_ms:
                 self.interval_ms = 0
 
             self.last_pressed = now
 
         self.value = True if value else False
+
+    def set_interval_limits(self, min_interval_ms, max_interval_ms):
+        self.min_interval_ms = min_interval_ms
+        self.max_interval_ms = max_interval_ms
 
     @property
     def pin_value(self,):
@@ -76,8 +108,8 @@ class MomentaryButton:
 
     @property
     def tap_tempo_ms(self,):
-        if self.interval_ms < self.MIN_INTERVAL_MS or self.interval_ms > self.MAX_INTERVAL_MS:
-            return self.MAX_INTERVAL_MS
+        if self.interval_ms < self.min_interval_ms or self.interval_ms > self.max_interval_ms:
+            return self.max_interval_ms
         return self.interval_ms
 
 
@@ -90,8 +122,10 @@ class Indicator:
         self.on_time_ms = on_time_ms
         self.off_time_ms = off_time_ms
 
-    def set_value(self, value):
-        self.blink = False
+    def set_value(self, value, reset_blink=True):
+        if reset_blink:
+            self.disable_blink()
+
         if value != self.value:
             self.last_change = time.ticks_ms()
             self.pin.on() if value else self.pin.off()
@@ -114,9 +148,10 @@ class Indicator:
     def off(self,):
         self.set_value(False)
 
-    def set_blink_rate(self, on_time_ms, off_time_ms):
+    def set_blink_rate(self, on_time_ms, off_time_ms, value=True):
         self.on_time_ms = on_time_ms
         self.off_time_ms = off_time_ms
+        self.set_value(value, reset_blink=False)
 
     def disable_blink(self,):
         self.on_time_ms = -1
@@ -147,15 +182,23 @@ class FootswitchActuator:
                                       CC_MODE_TOGGLE | CC_MODE_TRIGGER | CC_MODE_OPTIONS | CC_MODE_TAP_TEMPO | CC_MODE_MOMENTARY,
                                       max_assignments=1)
         self._button = MomentaryButton(button_dio)
-        self._indicator = Indicator(led_dio, on_time_ms=250, off_time_ms=500)
+        self._indicator = Indicator(led_dio)
 
     def update(self, ticks_ms):
         # Update the underlying actuator state with current button state
+        if self.actuator.assignment is not None:
+            # Is this assigned to TAP_TEMPO?
+            if self.actuator.assignment.mode & CC_MODE_TAP_TEMPO:
+                self.actuator.value = convert_from_ms(self.button.tap_tempo_ms, self.actuator.assignment.units)
+                return
+
+        # Otherwise set value based on simple switch limits
         self.actuator.value = FOOTSWITCH_ACTUATOR_MAX if self.button.is_pressed else FOOTSWITCH_ACTUATOR_MIN
 
     def update_assignment(self, assignment):
         if assignment is None:
             self.indicator.set_value(False)
+            self.button.set_interval_limits(TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS, TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS)
             return
 
         if assignment.mode & (CC_MODE_TRIGGER | CC_MODE_OPTIONS):
@@ -163,9 +206,16 @@ class FootswitchActuator:
 
         elif assignment.mode & CC_MODE_TOGGLE:
             self.indicator.set_value(assignment.value)
+
         elif assignment.mode & CC_MODE_TAP_TEMPO:
-            # TODO: Implement a flashing light for tap-tempo
-            pass
+            # Update interval limits on tap tempo
+            self.button.set_interval_limits(
+                convert_to_ms(assignment.min, assignment.unit),
+                convert_to_ms(assignment.max, assignment.unit),
+            )
+            interval_ms = convert_to_ms(assignment.value, assignment.unit)
+            self.indicator.set_blink_rate(TAP_TEMPO_ON_MS, interval_ms - TAP_TEMPO_ON_MS)
+
         elif assignment.mode & CC_MODE_MOMENTARY:
             self.indicator.set_value(assignment.value)
 
@@ -228,8 +278,6 @@ class DIOMonitor:
             self.last_tick = time.ticks_ms()
 
 
-HANDSHAKING_LED_BLINK_MS = 100
-
 class Footswitch:
     COUNT_RATE_MS = 150
 
@@ -272,14 +320,14 @@ class Footswitch:
                 self.connected = True
                 # Turn off all LEDs
                 self.led_pattern_override = [0]*len(self.actuators)
+                self.force_led_pattern(self.led_pattern_override)
             else:
                 if time.ticks_diff(now, self.last_update) > self.COUNT_RATE_MS:
                     # Advance the LED pattern indicating the footswitch is still connecting
-                    # Basically rotate the list in a circular manner
+                    # Rotate the list in a circular manner
                     self.led_pattern_override = self.led_pattern_override[-1:] + self.led_pattern_override[:-1]
                     self.last_update = now
-
-            self.force_led_pattern(self.led_pattern_override)
+                    self.force_led_pattern(self.led_pattern_override)
 
         # Update the actuator state
         for i, actuator in enumerate(self.actuators):
@@ -293,7 +341,7 @@ class Footswitch:
 
     def reset(self,):
         # Turn off all LEDs
-        self.force_led_pattern([False]*len(self.actuators))
+        self.force_led_pattern([0]*len(self.actuators))
         # TODO: What else do we do here?
 
     def force_led_pattern(self, pattern):
@@ -302,24 +350,17 @@ class Footswitch:
 
     def events_cb(self, event):
         print("Got event: ", event.__dict__)
-        if type(event.data) == type({}):
-            print(event.data.__dict__)
-        if event.id == CC_EV_UPDATE:
+        if event.id == CC_EV_UPDATE or event.id == CC_EV_ASSIGNMENT:
             if isinstance(event.data, CCAssignment):
+                print(event.data.__dict__)
                 self.actuators[event.data.actuator_id].update_assignment(event.data)
-
-        elif event.id == CC_EV_ASSIGNMENT:
-            # TODO: Handle tap tempo!
-
-            if isinstance(event.data, CCAssignment):
-                if event.data.id in self.device.assignments:
-                    self.actuators[event.data.actuator_id].update_assignment(event.data)
 
         elif event.id == CC_EV_UNASSIGNMENT:
             self.actuators[event.data].update_assignment(None)
 
         elif event.id == CC_EV_SET_VALUE:
             if isinstance(event.data, CCMsgSetValue):
+                print(event.data.__dict__)
                 self.actuators[event.data.actuator_id].update_assignment(self.device.assignments.get(event.data.assignment_id))
 
         elif event.id == CC_EV_MASTER_RESETED:
