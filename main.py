@@ -56,9 +56,9 @@ def convert_to_ms(value, source_units):
 def convert_from_ms(value, desired_units):
     units_lower = desired_units.lower()
     if units_lower == "bpm":
-        return 60000.0 * value
+        return 60000.0 / max(value, 0.1)
     elif units_lower == "hz":
-        return 1000.0 * value
+        return 1000.0 / max(value, 0.1)
     elif units_lower == "s":
         return value / 1000.0
     elif units_lower == "ms":
@@ -189,7 +189,7 @@ class FootswitchActuator:
         if self.actuator.assignment is not None:
             # Is this assigned to TAP_TEMPO?
             if self.actuator.assignment.mode & CC_MODE_TAP_TEMPO:
-                self.actuator.value = convert_from_ms(self.button.tap_tempo_ms, self.actuator.assignment.units)
+                self.actuator.value = convert_from_ms(self.button.tap_tempo_ms, self.actuator.assignment.unit)
                 return
 
         # Otherwise set value based on simple switch limits
@@ -209,11 +209,13 @@ class FootswitchActuator:
 
         elif assignment.mode & CC_MODE_TAP_TEMPO:
             # Update interval limits on tap tempo
+            # NOTE: We want to calculate the minimum interval with the maximum tempo (and vice versa)
             self.button.set_interval_limits(
-                convert_to_ms(assignment.min, assignment.unit),
                 convert_to_ms(assignment.max, assignment.unit),
+                convert_to_ms(assignment.min, assignment.unit),
             )
             interval_ms = convert_to_ms(assignment.value, assignment.unit)
+            self.button.interval_ms = interval_ms
             self.indicator.set_blink_rate(TAP_TEMPO_ON_MS, interval_ms - TAP_TEMPO_ON_MS)
 
         elif assignment.mode & CC_MODE_MOMENTARY:
@@ -233,7 +235,7 @@ class FootswitchActuator:
 
 
 class DIOMonitor:
-    BUTTON_DEBOUNCE_TIME_MS = 50
+    BUTTON_DEBOUNCE_TIME_MS = 20
 
     def __init__(self, footswitches):
         self.footswitches = footswitches
@@ -352,15 +354,17 @@ class Footswitch:
         print("Got event: ", event.__dict__)
         if event.id == CC_EV_UPDATE or event.id == CC_EV_ASSIGNMENT:
             if isinstance(event.data, CCAssignment):
-                print(event.data.__dict__)
-                self.actuators[event.data.actuator_id].update_assignment(event.data)
+                if event.data.id in self.device.assignments:
+                    print("Assignment: ", event.data.__dict__)
+                    self.actuators[event.data.actuator_id].update_assignment(event.data)
 
         elif event.id == CC_EV_UNASSIGNMENT:
+            print("Unassignment: ", event.data)
             self.actuators[event.data].update_assignment(None)
 
         elif event.id == CC_EV_SET_VALUE:
             if isinstance(event.data, CCMsgSetValue):
-                print(event.data.__dict__)
+                print("Set value: ", event.data.__dict__)
                 self.actuators[event.data.actuator_id].update_assignment(self.device.assignments.get(event.data.assignment_id))
 
         elif event.id == CC_EV_MASTER_RESETED:

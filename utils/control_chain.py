@@ -133,6 +133,8 @@ class ControlChainSlaveDevice:
             self.free(start_index, len(data))
             if messages is not None:
                 for msg in messages:
+                    if msg.command != 0:
+                        print("Got message: ", msg.__dict__)
                     self.cc_slave.handle_message(msg)
 
         # Process any events that happened as a result

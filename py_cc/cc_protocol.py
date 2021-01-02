@@ -203,8 +203,8 @@ class CCSlave:
                             {'updates' : [self.updates_queue.popleft() for i in range(count)]})
 
     def send_message(self, message):
-        # if message.command != CC_CMD_CHAIN_SYNC:
-        #     log(LOGLEVEL_INFO, "Sending message: %s", message.__dict__)
+        if message.command != CC_CMD_CHAIN_SYNC:
+            log(LOGLEVEL_INFO, "Sending message: %s", message.__dict__)
         # send sync byte plus message
         self.response_cb(message)
 
