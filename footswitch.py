@@ -90,34 +90,60 @@ class MomentaryButton:
         return self.interval_ms
 
 
+class LED_async():
+    def __init__(self, led_no):
+        self.led = pyb.LED(led_no)
+        self.rate = 0
+        asyncio.create_task(self.run())
+
+    async def run(self):
+        while True:
+            if self.rate <= 0:
+                await asyncio.sleep_ms(200)
+            else:
+                self.led.toggle()
+                await asyncio.sleep_ms(int(500 / self.rate))
+
+    def flash(self, rate):
+        self.rate = rate
+
+    def on(self):
+        self.led.on()
+        self.rate = 0
+
+    def off(self):
+        self.led.off()
+        self.rate = 0
+
+
+
 class Indicator:
-    def __init__(self, dio, on_time_ms=-1, off_time_ms=-1):
+    def __init__(self, dio, interval_ms=1000):
         self.pin = Pin(dio,  Pin.OUT)
+        self.interval_ms = interval_ms
         self.value = False
-        self.blink = False
-        self.last_change = time.ticks_ms()
-        self.on_time_ms = on_time_ms
-        self.off_time_ms = off_time_ms
+        self.blink_on_time_ms = 0
+        asyncio.create_task(self.run())
 
-    def set_value(self, value, reset_blink=True):
-        if reset_blink:
-            self.disable_blink()
+    async def run(self):
+        while True:
+            if self.blink_on_time_ms <= 0:
+                await asyncio.sleep_ms(self.interval_ms // 10)
+            else:
+                if self.is_on:
+                    # Turn off for the off duration
+                    self.set_value(False)
+                    await asyncio.sleep_ms(max(self.interval_ms - self.blink_on_time_ms, 0))
+                else:
+                    # Turn on for the blink duration
+                    self.set_value(True)
+                    await asyncio.sleep_ms(self.blink_on_time_ms)
 
+    def set_value(self, value):
         if value != self.value:
             self.last_change = time.ticks_ms()
             self.pin.on() if value else self.pin.off()
             self.value = True if value else False
-
-    def set_blink(self, value):
-        if self.is_off:
-            # Indicator is not supposed to be on, so do nothing
-            return
-
-        if value != self.blink:
-            # When self.blink is true, the indicator is forced off
-            self.blink = True if value else False
-            self.last_change = time.ticks_ms()
-            self.pin.on() if not self.blink else self.pin.off()
 
     def on(self,):
         self.set_value(True)
@@ -125,15 +151,13 @@ class Indicator:
     def off(self,):
         self.set_value(False)
 
-    def set_blink_rate(self, on_time_ms, off_time_ms, value=True):
-        self.on_time_ms = on_time_ms
-        self.off_time_ms = off_time_ms
-        self.set_value(value, reset_blink=False)
+    def set_blink_rate(self, on_time_ms, interval_ms=1000, value=False):
+        self.set_value(value)
+        self.set_interval(interval_ms)
+        self.blink_on_time_ms = on_time_ms
 
-    def disable_blink(self,):
-        self.on_time_ms = -1
-        self.off_time_ms = -1
-        self.blink = False
+    def set_interval(self, interval_ms):
+        self.interval_ms = interval_ms
 
     @property
     def is_on(self,):
@@ -145,7 +169,7 @@ class Indicator:
 
     @property
     def is_blinking(self,):
-        return self.blink == True
+        return self.blink_on_time_ms > 0
 
 
 class FootswitchActuator:
@@ -193,7 +217,7 @@ class FootswitchActuator:
             )
             interval_ms = convert_to_ms(assignment.value, assignment.unit)
             self.button.interval_ms = interval_ms
-            self.indicator.set_blink_rate(TAP_TEMPO_ON_MS, interval_ms - TAP_TEMPO_ON_MS)
+            self.indicator.set_blink_rate(TAP_TEMPO_ON_MS, interval_ms=interval_ms)
 
         elif assignment.mode & CC_MODE_MOMENTARY:
             self.indicator.set_value(assignment.value)
@@ -234,7 +258,8 @@ class Footswitch:
 
         # LED pattern to show while the footswitch is trying to connect to the Mod
         # (this will be updated in the mainloop until connected)
-        self.led_pattern_override = [1] + [0]*(len(self.actuators) - 1)
+        for actuator in self.actuators:
+            actuator.indicator.set_blink_rate(200)
 
     def run(self,):
         '''The main processing loop that runs forever'''
@@ -247,6 +272,7 @@ class Footswitch:
             if not self.connected:
                 if self.device.is_connected:
                     self.connected = True
+                    self.force_led_pattern([0]*len(self.actuators))
                 else:
                     # TODO - indicate handshaking...
                     print("Waiting to handshake...")
@@ -265,6 +291,7 @@ class Footswitch:
 
     def force_led_pattern(self, pattern):
         for i in range(min(len(pattern), len(self.actuators))):
+            self.actuators[i].indicator.set_blink_rate(0)
             self.actuators[i].indicator.set_value(True if pattern[i] else False)
 
     def events_cb(self, event):
