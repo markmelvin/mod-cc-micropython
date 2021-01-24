@@ -1,3 +1,4 @@
+import uasyncio as asyncio
 import urandom as random
 from ucollections import deque
 import micropython
