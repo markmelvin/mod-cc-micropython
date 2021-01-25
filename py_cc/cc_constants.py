@@ -20,11 +20,6 @@ CC_PROTOCOL_MAX_UNKNOWN_BYTES   = 3000
 
 I_AM_ALIVE_PERIOD       = 50      # in sync cycles
 
-# define firmware version
-CC_FIRMWARE_MAJOR       = 0
-CC_FIRMWARE_MINOR       = 3
-CC_FIRMWARE_MICRO       = 0
-
 # protocol version
 CC_PROTOCOL_MAJOR       = 0
 CC_PROTOCOL_MINOR       = 6
@@ -35,7 +30,6 @@ CC_FRAME_PERIOD         = 1000        # in us
 
 # define versions as strings
 CC_PROTOCOL_VERSION     = "%d.%d" % (CC_PROTOCOL_MAJOR, CC_PROTOCOL_MINOR)
-CC_FIRMWARE_VERSION     = "%d.%d.%d" % (CC_FIRMWARE_MAJOR, CC_FIRMWARE_MINOR, CC_FIRMWARE_MICRO)
 
 CC_MSG_HEADER_SIZE      = 4
 

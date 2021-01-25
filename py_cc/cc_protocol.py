@@ -231,7 +231,7 @@ class CCSlave:
                     # generate handshake
                     handshake = CCHandshake(random.getrandbits(16),
                                             CCVersion(CC_PROTOCOL_MAJOR, CC_PROTOCOL_MINOR, 0),
-                                            CCVersion(CC_FIRMWARE_MAJOR, CC_FIRMWARE_MINOR,CC_FIRMWARE_MICRO))
+                                            self.device.fw_version)
                     # delay the message before send it (the delay value is based on the random id)
                     # this delay should minimize the chance of handshake conflicting
                     # since multiple devices can be connected at the same time

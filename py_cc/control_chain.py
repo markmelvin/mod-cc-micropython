@@ -34,7 +34,7 @@ def convert_from_ms(value, desired_units):
     return 0.0
 
 class ControlChainSlaveDevice:
-    def __init__(self, name, url, actuators, timer, uart, tx_en, events_callback=None):
+    def __init__(self, name, url, fw_version, actuators, timer, uart, tx_en, events_callback=None):
         self.events_cb = events_callback
 
         self.uart = uart
@@ -46,7 +46,7 @@ class ControlChainSlaveDevice:
         self.send_queue = Queue(maxsize=50)
         self.event_queue = Queue(maxsize=50)
 
-        self.cc_device = CCDevice(name, url, actuators=actuators)
+        self.cc_device = CCDevice(name, url, fw_version, actuators=actuators)
         self.cc_slave = CCSlave(self.on_response, self.on_event, timer, self.cc_device)
 
         # Allocate fixed buffers once up-front and use memoryviews

@@ -41,9 +41,10 @@ def get_serialized_string(s, buffer, max_size=255):
 # Utility classes
 ############################################
 class CCDevice:
-    def __init__(self, name, uri, actuators=None):
+    def __init__(self, name, uri, fw_version, actuators=None):
         self.name = name
         self.uri = uri
+        self.fw_version = fw_version
         self.actuators = [] if actuators is None else actuators
         self.handshake = None
         self.assignments = {}

@@ -5,6 +5,7 @@ from machine import Pin, UART
 import time
 
 from primitives.switch import Switch
+from py_cc.cc_classes import CCVersion
 from py_cc.cc_protocol import CCActuator, CCAssignment, set_log_level, LOGLEVEL_DEBUG, LOGLEVEL_INFO
 from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_MOMENTARY, CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, CC_MODE_TAP_TEMPO, \
@@ -15,6 +16,11 @@ from py_cc.control_chain import ControlChainSlaveDevice, convert_to_ms, convert_
 
 DEVICE_NAME = "Audiofab Footswitch"
 DEVICE_URL = "https://github.com/markmelvin/mod-cc-micropython"
+
+FIRMWARE_MAJOR       = 0
+FIRMWARE_MINOR       = 4
+FIRMWARE_MICRO       = 0
+
 
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
 LED_DIO         = 'PA5'
@@ -35,12 +41,6 @@ FOOTSWITCH_ACTUATOR_MAX = 1.0
 TAP_TEMPO_ON_MS = 50
 TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS = 100
 TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS = 3000
-
-
-async def pulse_led(led, ms):
-    led.on()
-    await asyncio.sleep_ms(ms)
-    led.off()
 
 
 class MomentaryButton:
@@ -88,33 +88,6 @@ class MomentaryButton:
         if self.interval_ms < self.min_interval_ms or self.interval_ms > self.max_interval_ms:
             return self.max_interval_ms
         return self.interval_ms
-
-
-class LED_async():
-    def __init__(self, led_no):
-        self.led = pyb.LED(led_no)
-        self.rate = 0
-        asyncio.create_task(self.run())
-
-    async def run(self):
-        while True:
-            if self.rate <= 0:
-                await asyncio.sleep_ms(200)
-            else:
-                self.led.toggle()
-                await asyncio.sleep_ms(int(500 / self.rate))
-
-    def flash(self, rate):
-        self.rate = rate
-
-    def on(self):
-        self.led.on()
-        self.rate = 0
-
-    def off(self):
-        self.led.off()
-        self.rate = 0
-
 
 
 class Indicator:
@@ -252,19 +225,11 @@ class Footswitch:
 
         # The control chain device will operate in a background thread and call our
         # event callback whever something we need to know about occurs
-        self.device = ControlChainSlaveDevice(DEVICE_NAME, DEVICE_URL, [w.actuator for w in self.actuators],
-                                              timer, uart, tx_en,
-                                              events_callback=self.events_cb)
-
-        # LED pattern to show while the footswitch is trying to connect to the Mod
-        # (this will be updated in the mainloop until connected)
-        for actuator in self.actuators:
-            actuator.indicator.set_blink_rate(200)
+        self.device = ControlChainSlaveDevice(DEVICE_NAME, DEVICE_URL, CCVersion(FIRMWARE_MAJOR, FIRMWARE_MINOR, FIRMWARE_MICRO),
+                                              [w.actuator for w in self.actuators], timer, uart, tx_en, events_callback=self.events_cb)
 
     def run(self,):
         '''The main processing loop that runs forever'''
-        led = Pin(LED_DIO, Pin.OUT)
-        await pulse_led(led, 500)
         print("Starting footswitch firmware!")
 
         while True:
@@ -274,15 +239,18 @@ class Footswitch:
                     self.connected = True
                     self.force_led_pattern([0]*len(self.actuators))
                 else:
-                    # TODO - indicate handshaking...
-                    print("Waiting to handshake...")
-                    await asyncio.sleep(0.25)
+                    # Indicate to user we're waiting to handshake
+                    for actuator in self.actuators:
+                        actuator.indicator.on()
+                        await asyncio.sleep_ms(100)
+                        actuator.indicator.off()
 
-            # Update the actuator state
-            for i, actuator in enumerate(self.actuators):
-                await actuator.update(now)
+            else:
+                # Update the actuator state
+                for i, actuator in enumerate(self.actuators):
+                    await actuator.update(now)
 
-            await asyncio.sleep(0)
+                await asyncio.sleep(0)
 
     def reset(self,):
         # Turn off all LEDs

@@ -5,8 +5,8 @@ mkdir /flash/primitives
 
 cp ./py_cc/__init__.py /flash/py_cc
 cp ./py_cc/cc_classes.mpy /flash/py_cc
-cp ./py_cc/cc_protocol.mpy /flash/py_cc
 cp ./py_cc/cc_constants.mpy /flash/py_cc
+cp ./py_cc/cc_protocol.mpy /flash/py_cc
 cp ./py_cc/control_chain.mpy /flash/py_cc
 cp ./py_cc/crc8.mpy /flash/py_cc
 
