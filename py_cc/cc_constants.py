@@ -20,14 +20,9 @@ CC_PROTOCOL_MAX_UNKNOWN_BYTES   = 3000
 
 I_AM_ALIVE_PERIOD       = 50      # in sync cycles
 
-# define firmware version
-CC_FIRMWARE_MAJOR       = 0
-CC_FIRMWARE_MINOR       = 2
-CC_FIRMWARE_MICRO       = 0
-
 # protocol version
 CC_PROTOCOL_MAJOR       = 0
-CC_PROTOCOL_MINOR       = 5
+CC_PROTOCOL_MINOR       = 6
 
 # define serial communication baud rate and frame period
 CC_BAUD_RATE            = 500000      # in bps
@@ -35,7 +30,6 @@ CC_FRAME_PERIOD         = 1000        # in us
 
 # define versions as strings
 CC_PROTOCOL_VERSION     = "%d.%d" % (CC_PROTOCOL_MAJOR, CC_PROTOCOL_MINOR)
-CC_FIRMWARE_VERSION     = "%d.%d.%d" % (CC_FIRMWARE_MAJOR, CC_FIRMWARE_MINOR, CC_FIRMWARE_MICRO)
 
 CC_MSG_HEADER_SIZE      = 4
 
@@ -79,6 +73,7 @@ CC_CMD_DEV_DESCRIPTOR   = 3
 CC_CMD_ASSIGNMENT       = 4
 CC_CMD_DATA_UPDATE      = 5
 CC_CMD_UNASSIGNMENT     = 6
+CC_CMD_SET_VALUE        = 7
 
 CC_COMMANDS = (CC_CMD_CHAIN_SYNC,
                CC_CMD_HANDSHAKE,
@@ -86,7 +81,8 @@ CC_COMMANDS = (CC_CMD_CHAIN_SYNC,
                CC_CMD_DEV_DESCRIPTOR,
                CC_CMD_ASSIGNMENT,
                CC_CMD_DATA_UPDATE,
-               CC_CMD_UNASSIGNMENT)
+               CC_CMD_UNASSIGNMENT,
+               CC_CMD_SET_VALUE)
 
 # Control chain events
 CC_EV_HANDSHAKE_FAILED  = 0
@@ -95,28 +91,36 @@ CC_EV_UNASSIGNMENT      = 2
 CC_EV_UPDATE            = 3
 CC_EV_DEVICE_DISABLED   = 4
 CC_EV_MASTER_RESETED    = 5
+CC_EV_SET_VALUE         = 6
 
 CC_EVENTS = (CC_EV_HANDSHAKE_FAILED,
              CC_EV_ASSIGNMENT,
              CC_EV_UNASSIGNMENT,
              CC_EV_UPDATE,
              CC_EV_DEVICE_DISABLED,
-             CC_EV_MASTER_RESETED)
+             CC_EV_MASTER_RESETED,
+             CC_EV_SET_VALUE)
 
 # Assignment modes
-CC_MODE_TOGGLE          = 0x01
-CC_MODE_TRIGGER         = 0x02
-CC_MODE_OPTIONS         = 0x04
-CC_MODE_REAL            = 0x10
-CC_MODE_INTEGER         = 0x20
-CC_MODE_FEEDBACK        = 0x40
+CC_MODE_TOGGLE          = 0x001
+CC_MODE_TRIGGER         = 0x002
+CC_MODE_OPTIONS         = 0x004
+CC_MODE_TAP_TEMPO       = 0x008
+CC_MODE_REAL            = 0x010
+CC_MODE_INTEGER         = 0x020
+CC_MODE_LOGARITHMIC     = 0x040
+CC_MODE_COLOURED        = 0x100
+CC_MODE_MOMENTARY       = 0x200
 
 CC_ASSIGNMENT_MODES = (CC_MODE_TOGGLE,
                        CC_MODE_TRIGGER,
                        CC_MODE_OPTIONS,
+                       CC_MODE_TAP_TEMPO,
                        CC_MODE_REAL,
                        CC_MODE_INTEGER,
-                       CC_MODE_FEEDBACK)
+                       CC_MODE_LOGARITHMIC,
+                       CC_MODE_COLOURED,
+                       CC_MODE_MOMENTARY)
 
 # Actuator types
 CC_ACTUATOR_TYPE_UNKNOWN= -1

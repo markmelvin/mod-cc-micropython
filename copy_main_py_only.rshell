@@ -1,6 +1,0 @@
-
-cp main.py /flash
-
-ls -al /flash
-
-exit

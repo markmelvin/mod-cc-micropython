@@ -4,7 +4,7 @@ A micropython module implementing the moddevices control chain protocol (current
 # Current status
 The code is currently fully-functional. It handshakes and will show up in the Mod Duo(X) UI, and you can freely assign any toggle or option signal to any of the four switch inputs. Indication of the state of the four assignments is provided via four LED output signals.
 
-Currently tap tempo is not supported but will be implemented soon.
+Tap tempo is under development and will be verified when this is available in the Mod Duo X (or Dwarf) firmware.
 
 # Running on an STM32 NUCLEO-F446RE development board
 
@@ -28,9 +28,8 @@ https://github.com/stlink-org/stlink/releases/tag/v1.3.0
 ## Required micropython configuration
 
 If you plan on building micropython yourself from scratch, you will need [micropython](https://github.com/micropython/micropython) as well as the [ARM toolchain](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads).
-### Threading
 
-The code in this repository uses threading which is not enabled by default. This can be enabled by defining `MICROPY_PY_THREAD` to `1` in the file `mpconfigport.h` for the port you are using (in our case, `ports/stms32/mpconfigport.h`), and rebuilding micropython.
+A stock build of micropython will work with no changes to the default options. Threading is no longer required now that the code has been ported to use asyncio.
 
 ### Timers
 
@@ -73,10 +72,10 @@ There is [a script in the root folder](./flash_micropython.bat) that uses a loca
 
 ### Flashing the user program (written in Python)
 
-Your user-program is written in pure micropython and is flashed separately from the micropython runtime. This is done with a simple serial connection to the micropython REPL using a utility called [rshell](https://github.com/dhylands/rshell). This must be installed and there are a couple of scripts provided to flash the user program onto the device. [flash_pyfootswitch.bat](./flash_pyfootswitch.bat) will flash all of the firmware (control chain protocol module and other helper modules) to the device as well as the main user program (`main.py`). This only needs to be done once (or whenever a helper module changes). The other script - [flash_main_py.bat](./flash_main_py.bat) - flashes the main user program to the device. Typically this all you need to flash on a regular basis during development.
+Your user-program is written in pure micropython and is flashed separately from the micropython runtime. This is done with a simple serial connection to the micropython REPL using a utility called [rshell](https://github.com/dhylands/rshell). This must be installed and there are a couple of scripts provided to flash the user program onto the device. [flash_all_py.bat](./flash_all_py.bat) will flash all of the firmware (control chain protocol module and other helper modules) to the device as well as the main user program (`footswitch.py`). This only needs to be done once (or whenever a helper module changes). The other script - [flash_footswitch_py.bat](./flash_footswitch_py.bat) - flashes the main user program to the device. Typically this all you need to flash on a regular basis during development.
 
 Once everything has been flashed, you can plug your "footswitch" into your Mod Duo(X) and you should see it detected in the Mod web GUI!
 
 ## Customizing the footswitch
 
-It is recommended you edit `main.py` to customize the name and URL of the device as well as any DIO pin names such that they correspond to your specific board/device.
+It is recommended you edit `footswitch.py` to customize the name and URL of the device as well as any DIO pin names such that they correspond to your specific board/device.

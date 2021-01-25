@@ -1,3 +1,4 @@
+import uasyncio as asyncio
 import urandom as random
 from ucollections import deque
 import micropython
@@ -19,6 +20,7 @@ def decode_message(device_id, command, data):
         CC_CMD_DEV_CONTROL      : CCMsgDeviceControl,
         CC_CMD_ASSIGNMENT       : CCMsgAssignment,
         CC_CMD_UNASSIGNMENT     : CCMsgUnassignment,
+        CC_CMD_SET_VALUE        : CCMsgSetValue,
     }
     if command in commands_to_classes:
         try:
@@ -229,7 +231,7 @@ class CCSlave:
                     # generate handshake
                     handshake = CCHandshake(random.getrandbits(16),
                                             CCVersion(CC_PROTOCOL_MAJOR, CC_PROTOCOL_MINOR, 0),
-                                            CCVersion(CC_FIRMWARE_MAJOR, CC_FIRMWARE_MINOR,CC_FIRMWARE_MICRO))
+                                            self.device.fw_version)
                     # delay the message before send it (the delay value is based on the random id)
                     # this delay should minimize the chance of handshake conflicting
                     # since multiple devices can be connected at the same time
@@ -309,3 +311,7 @@ class CCSlave:
                 actuator_id = self.device.remove_assignment(message.assignment_id)
                 self.raise_event(CCEvent(CC_EV_UNASSIGNMENT, actuator_id))
                 self.send_message(CCMsgAssignmentAcknowledge(self.protocol.address, CC_CMD_UNASSIGNMENT, None))
+
+            elif isinstance(message, CCMsgSetValue):
+                self.raise_event(CCEvent(CC_EV_SET_VALUE, message))
+                self.send_message(CCMsgAssignmentAcknowledge(self.protocol.address, CC_CMD_SET_VALUE, None))

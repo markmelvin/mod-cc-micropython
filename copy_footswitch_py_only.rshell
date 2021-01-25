@@ -1,0 +1,5 @@
+cp footswitch.py /flash
+
+ls -al /flash
+
+exit
