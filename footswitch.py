@@ -13,7 +13,6 @@ from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
 
 from py_cc.control_chain import ControlChainSlaveDevice, convert_to_ms, convert_from_ms
 
-
 DEVICE_NAME = "Audiofab Footswitch"
 DEVICE_URL = "https://github.com/markmelvin/mod-cc-micropython"
 
@@ -21,14 +20,11 @@ FIRMWARE_MAJOR       = 0
 FIRMWARE_MINOR       = 4
 FIRMWARE_MICRO       = 0
 
-
 BAUD_RATE       = CC_BAUD_RATE_FALLBACK
-LED_DIO         = 'PA5'
 TIMER_NUMBER    = 2         # Timer2 is one of the high-speed timers
 UART_NUMBER     = 6         # UART6 is on PC6/7
 SERIAL_TX_EN    = 'PA10'    # Serial "is transmitting" pin
 
-BUTTON_DEBOUNCE_CYCLES = 10
 # Footswitch inputs
 FOOTSWITCH_DIOS = ['PB3', 'PB5', 'PB4', 'PB10']
 # Corresponding indicator LED outputs
