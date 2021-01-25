@@ -6,6 +6,9 @@ The code is currently fully-functional. It handshakes and will show up in the Mo
 
 Tap tempo is under development and will be verified when this is available in the Mod Duo X (or Dwarf) firmware.
 
+## Known Issues
+Since moving to asyncio there is an issue when assigning lists of parameters to a footswitch. It appears that the serial bytes are not consumed fast enough and the assignment fails. This is being looked into.
+
 # Running on an STM32 NUCLEO-F446RE development board
 
 Currently this project runs on an ST Microelectronics NUCLEO-F446RE development board with a [moddevices Arduino shield](https://www.moddevices.com/products/arduino-shield) attached.
