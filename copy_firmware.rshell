@@ -13,6 +13,7 @@ cp ./py_cc/crc8.mpy /flash/py_cc
 cp ./primitives/__init__.py /flash/primitives
 cp ./primitives/switch.mpy /flash/primitives
 cp ./primitives/queue.mpy /flash/primitives
+cp ./primitives/irq_event.mpy /flash/primitives
 
 cp footswitch.py /flash
 cp main.py /flash

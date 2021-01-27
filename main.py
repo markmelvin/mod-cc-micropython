@@ -12,7 +12,7 @@ sys.path.append('./')
 async def run_gc():
     gc.collect()
     gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
-    asyncio.sleep(10)
+    asyncio.sleep(30)
 
 def set_global_exception():
     def handle_exception(loop, context):
@@ -25,7 +25,8 @@ def set_global_exception():
 async def main():
     set_global_exception()
     footswitch = Footswitch()
-    asyncio.create_task(run_gc())
+    gc.collect()
+    # asyncio.create_task(run_gc())
     await footswitch.run()
 
 try:

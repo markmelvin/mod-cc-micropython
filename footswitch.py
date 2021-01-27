@@ -11,7 +11,7 @@ from py_cc.cc_constants import CC_BAUD_RATE_FALLBACK, CC_ACTUATOR_MOMENTARY, \
                                CC_MODE_MOMENTARY, CC_MODE_TOGGLE, CC_MODE_TRIGGER, CC_MODE_OPTIONS, CC_MODE_TAP_TEMPO, \
                                CC_EV_UPDATE, CC_EV_ASSIGNMENT, CC_EV_UNASSIGNMENT, CC_EV_MASTER_RESETED, CC_EV_SET_VALUE
 
-from py_cc.control_chain import ControlChainSlaveDevice, convert_to_ms, convert_from_ms
+from py_cc.control_chain import ControlChainSlaveDevice, convert_to_ms, convert_from_ms, RX_BUFFER_SIZE
 
 DEVICE_NAME = "Audiofab Footswitch"
 DEVICE_URL = "https://github.com/markmelvin/mod-cc-micropython"
@@ -97,12 +97,12 @@ class Indicator:
     async def run(self):
         while True:
             if self.blink_on_time_ms <= 0:
-                await asyncio.sleep_ms(self.interval_ms // 10)
+                await asyncio.sleep_ms(100)
             else:
                 if self.is_on:
                     # Turn off for the off duration
                     self.set_value(False)
-                    await asyncio.sleep_ms(max(self.interval_ms - self.blink_on_time_ms, 0))
+                    await asyncio.sleep_ms(int(max(self.interval_ms - self.blink_on_time_ms, 0)))
                 else:
                     # Turn on for the blink duration
                     self.set_value(True)
@@ -120,10 +120,10 @@ class Indicator:
     def off(self,):
         self.set_value(False)
 
-    def set_blink_rate(self, on_time_ms, interval_ms=1000, value=False):
-        self.set_value(value)
-        self.set_interval(interval_ms)
+    def set_blink_rate(self, on_time_ms, interval_ms=1000, value=True):
         self.blink_on_time_ms = on_time_ms
+        self.set_interval(interval_ms)
+        self.set_value(value)
 
     def set_interval(self, interval_ms):
         self.interval_ms = interval_ms
@@ -167,7 +167,7 @@ class FootswitchActuator:
 
     def update_assignment(self, assignment):
         if assignment is None:
-            self.indicator.set_value(False)
+            self.indicator.set_blink_rate(0, value=False)
             self.button.set_interval_limits(TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS, TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS)
             return
 
@@ -216,7 +216,7 @@ class Footswitch:
 
         # Create the underlying Control Chain device slave
         timer = Timer(TIMER_NUMBER)
-        uart = UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=256)
+        uart = UART(UART_NUMBER, BAUD_RATE, bits=8, parity=None, stop=1, rxbuf=RX_BUFFER_SIZE)
         tx_en = Pin(SERIAL_TX_EN, Pin.OUT)
 
         # The control chain device will operate in a background thread and call our
@@ -246,7 +246,7 @@ class Footswitch:
                 for i, actuator in enumerate(self.actuators):
                     await actuator.update(now)
 
-                await asyncio.sleep(0)
+                await asyncio.sleep_ms(0)
 
     def reset(self,):
         # Turn off all LEDs

@@ -1,4 +1,5 @@
 import uasyncio as asyncio
+from primitives.irq_event import IRQ_EVENT
 import urandom as random
 from ucollections import deque
 import micropython
@@ -147,10 +148,8 @@ class CCSlave:
         self.response_cb = response_cb
         self.events_cb = events_cb
         self.us_timer = timer
-        # Allocate a bound method reference for use in a callback
-        # (see https://docs.micropython.org/en/latest/reference/isr_rules.html#creation-of-python-objects
-        #  and https://forum.micropython.org/viewtopic.php?f=2&t=4027&p=23118#p23118)
-        self.on_timer_ref = self.on_timer
+        # asyncio event to set in the timer interrupt
+        self.timer_event = IRQ_EVENT()
         self.device = device
         self.updates_queue = deque((), CC_UPDATES_QUEUE_SIZE)
         self.sync_counter = 0
@@ -158,7 +157,9 @@ class CCSlave:
         self.handshake_timeout = 0
         self.dev_desc_timeout = 0
         self.comm_state = WAITING_SYNCING
+        self.sync_message = None
         self.protocol = CCProtocol()
+        asyncio.create_task(self.handle_timer_interrupt())
 
     def clear_updates(self,):
         while len(self.updates_queue) > 0:
@@ -176,25 +177,25 @@ class CCSlave:
         self.us_timer.init(prescaler=83, period=value, callback=self.timer_cb)
 
     def timer_cb(self, t):
+        # Called in an interrupt. Set asyncio event for consumption by asyncio handler.
         self.us_timer.callback(None)
-        micropython.schedule(self.on_timer_ref, 0)
+        self.timer_event.set()
 
-    def on_timer(self, _):
-        # TODO: [future/optimization] the update message shouldn't be built in the interrupt
-        # handler, the time of the frame is being wasted with processing. ideally it has to be
-        # cached in the main loop and the interrupt handler is only used to queue the message
-        # (send command)
-        # log(LOGLEVEL_DEBUG, "In on_timer: %s", len(self.updates_queue))
-        if len(self.updates_queue) == 0:
-            # the device cannot stay so long time without say hey to mod, it's very needy
-            self.sync_counter += 1
-            if self.sync_counter >= I_AM_ALIVE_PERIOD:
-                self.send_message(CCMsgSync(self.protocol.address, {'type' : CC_SYNC_REGULAR_CYCLE}))
+    async def handle_timer_interrupt(self,):
+        while True:
+            await self.timer_event.wait()  # Wait for the next timer interrupt
+            if len(self.updates_queue) == 0:
+                self.sync_counter += 1
+                if self.sync_counter >= I_AM_ALIVE_PERIOD:
+                    if self.sync_message:
+                        self.send_message(self.sync_message)
+                    else:
+                        self.send_message(CCMsgSync(self.protocol.address, {'type' : CC_SYNC_REGULAR_CYCLE}))
+                    self.sync_counter = 0
+            else:
+                # Send the next update
+                self.send_message(self.get_updates_message())
                 self.sync_counter = 0
-        else:
-            # Send the next update
-            self.send_message(self.get_updates_message())
-            self.sync_counter = 0
 
     def get_updates_message(self,):
         count = len(self.updates_queue)
@@ -225,6 +226,7 @@ class CCSlave:
                 self.comm_state = WAITING_SYNCING
 
         if self.comm_state == WAITING_SYNCING:
+            self.sync_message = None
             if isinstance(message, CCMsgSync):
                 # check if it's handshake sync cycle
                 if message.type == CC_SYNC_HANDSHAKE_CYCLE:
@@ -253,6 +255,8 @@ class CCSlave:
                     # TODO: handle channel
                     self.protocol.address = message.assigned_device_id
                     log(LOGLEVEL_INFO, "We were assigned device address %d!", self.protocol.address)
+                    # Cache the sync message so we don't need to recreate it all the time
+                    self.sync_message = CCMsgSync(self.protocol.address, {'type' : CC_SYNC_REGULAR_CYCLE})
                     self.comm_state = WAITING_DEV_DESCRIPTOR
                     self.handshake_attempts = 0
                     self.handshake_timeout = 0

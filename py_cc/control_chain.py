@@ -1,12 +1,16 @@
 import uasyncio as asyncio
 from primitives.queue import Queue, QueueEmpty, QueueFull
+from primitives.irq_event import IRQ_EVENT
 import time
 import machine
+import micropython
 
 from py_cc.cc_protocol import CCDevice, CCSlave
 from py_cc.cc_constants import LISTENING_REQUESTS
 
-RX_BUFFER_SIZE = 64
+micropython.alloc_emergency_exception_buf(100)
+
+RX_BUFFER_SIZE = 1344
 TX_BUFFER_SIZE = 128
 
 def convert_to_ms(value, source_units):
@@ -33,6 +37,7 @@ def convert_from_ms(value, desired_units):
         return value
     return 0.0
 
+
 class ControlChainSlaveDevice:
     def __init__(self, name, url, fw_version, actuators, timer, uart, tx_en, events_callback=None):
         self.events_cb = events_callback
@@ -51,40 +56,58 @@ class ControlChainSlaveDevice:
 
         # Allocate fixed buffers once up-front and use memoryviews
         # to save on allocations and reduce memory fragmentation
-        self._rx_buffer = bytearray(RX_BUFFER_SIZE)
+        self.rx_buf_size = 2*RX_BUFFER_SIZE
+        self._rx_buffer = bytearray(self.rx_buf_size)
         self._tx_buffer = bytearray(TX_BUFFER_SIZE)
 
         self.RX_BUF = memoryview(self._rx_buffer)
         self.TX_BUF = memoryview(self._tx_buffer)
 
-        # Hook up our callback to the UART receive interrupt
+        # asyncio event set by the hard UART interrupt handler
+        self.rx_event = IRQ_EVENT()
+
+        # Hook up our callback to the UART receive interrupt. This will simply set
+        # the asyncio event and get the heck out. The asyncio handler will be the
+        # workhorse and do the work outside of the hard interrupt handler
         # TODO: This may not be fully public/finished API but seems to work well for my STM32 board
         #self.uart.irq(handler, trigger, hard)  # Not properly documented in uPython
         # TODO: machine.UART.IRQ_RXIDLE seems specific to STM32?
-        self.uart.irq(self.on_serial_rx_data, machine.UART.IRQ_RXIDLE, False)
+        self.uart.irq(self.on_serial_rx_data, machine.UART.IRQ_RXIDLE, True)
 
+        asyncio.create_task(self.handle_serial_rx())
         asyncio.create_task(self.handle_serial_tx())
         asyncio.create_task(self.cc_slave_process())
         asyncio.create_task(self.process_events())
 
-    def on_serial_rx_data(self, *args, **kwargs):
+    def on_serial_rx_data(self, arg):
         '''
-        Callback called as an ISR whenever there are 1-8 characters waiting in the RX buffer.
+        Callback called as an ISR whenever there are characters waiting in the RX buffer.
         '''
-        bytes_avail =  self.uart.any()
-        if bytes_avail > RX_BUFFER_SIZE:
-            #TODO - handle failure in a robust manner
-            print("ERROR: Losing %d bytes of data!" % (bytes_avail - RX_BUFFER_SIZE))
+        # Set the asyncio event and return ASAP
+        self.rx_event.set()
 
-        buffer = self.RX_BUF[0:bytes_avail]
-        length = len(buffer)
-        remaining = length
-        while remaining > 0:
-            _read = self.uart.readinto(buffer[length-remaining:], remaining)
-            remaining -= _read
-        messages = self.cc_slave.protocol.receive_data(buffer)
-        for message in messages:
-            self.cc_slave.handle_message(message)
+    async def handle_serial_rx(self,):
+        while True:
+            await self.rx_event.wait()  # Wait for the next interrupt
+            bytes_read = 0
+            bytes_avail =  self.uart.any()
+            # Read as many bytes as we can into our buffer. This should hopefully
+            # avoid many calls to the interrupt handler if a long transmission
+            # comes in. We can grab as many bytes as we can as they come in, in realtime.
+            while bytes_avail > 0 and bytes_read + bytes_avail < self.rx_buf_size:
+                buffer = self.RX_BUF[bytes_read:bytes_read + bytes_avail]
+                length = len(buffer)
+                remaining = length
+                while remaining > 0:
+                    _read = self.uart.readinto(buffer[length - remaining:], remaining)
+                    remaining -= _read
+                bytes_read += length
+                bytes_avail = self.uart.any()
+
+            if bytes_read > 0:
+                messages = self.cc_slave.protocol.receive_data(self.RX_BUF[0:bytes_read])
+                for message in messages:
+                    self.cc_slave.handle_message(message)
 
     async def handle_serial_tx(self,):
         while True:

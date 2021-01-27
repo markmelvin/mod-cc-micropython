@@ -13,6 +13,7 @@ wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./py_cc/crc8.py
 
 wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./primitives/switch.py
 wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./primitives/queue.py
+wsl %MPY_CROSS% %MPY_CROSS_ARGS% ./primitives/irq_event.py
 
 rshell -p %COM_PORT% -f copy_firmware.rshell
 
