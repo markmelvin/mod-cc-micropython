@@ -6,7 +6,7 @@ import machine
 import micropython
 
 from py_cc.cc_protocol import CCDevice, CCSlave
-from py_cc.cc_constants import LISTENING_REQUESTS
+from py_cc.cc_constants import LISTENING_REQUESTS, CC_MSG_PRIORITY_LOW, CC_MSG_PRIORITY_HIGH
 
 micropython.alloc_emergency_exception_buf(100)
 
@@ -126,9 +126,12 @@ class ControlChainSlaveDevice:
             del message
 
     # Callbacks
-    def on_response(self, message):
+    def on_response(self, message, priority=CC_MSG_PRIORITY_LOW):
         try:
-            self.send_queue.put_nowait(message)
+            if priority == CC_MSG_PRIORITY_HIGH:
+                self.send_queue.insert_nowait(message)
+            else:
+                self.send_queue.put_nowait(message)
         except QueueFull:
             print("Send queue full! Dropping message!", message.__dict__)
 

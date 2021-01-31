@@ -49,6 +49,11 @@ class Queue:
         self._evput.clear()
         self._queue.append(val)
 
+    def _insert(self, val):
+        self._evput.set()  # Schedule tasks waiting on insert
+        self._evput.clear()
+        self._queue.insert(0, val)
+
     async def put(self, val):  # Usage: await queue.put(item)
         while self.full():
             # Queue full
@@ -60,6 +65,11 @@ class Queue:
         if self.full():
             raise QueueFull()
         self._put(val)
+
+    def insert_nowait(self, val):  # Put an item into the front of the queue without blocking.
+        if self.full():
+            raise QueueFull()
+        self._insert(val)
 
     def qsize(self):  # Number of items in the queue.
         return len(self._queue)

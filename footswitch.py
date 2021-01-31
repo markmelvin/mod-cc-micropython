@@ -39,6 +39,17 @@ TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS = 100
 TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS = 3000
 
 
+# Asyncio debugging heartbeat. Flash the onboard LED regularly.
+def heartbeat():
+    pin = Pin('PA5',  Pin.OUT)
+    while True:
+        pin.on()
+        await asyncio.sleep_ms(250)
+        pin.off()
+        await asyncio.sleep_ms(500)
+
+asyncio.create_task(heartbeat())
+
 class MomentaryButton:
     def __init__(self, dio):
         self.value = False
@@ -153,12 +164,14 @@ class FootswitchActuator:
                                       max_assignments=1)
         self._button = MomentaryButton(button_dio)
         self._indicator = Indicator(led_dio)
+        # Local tap tempo. Mod must set this value initially to avoid feedback loops.
+        self.tap_tempo_ms = None
 
     async def update(self, ticks_ms):
         # Update the underlying actuator state with current button state
         if self.actuator.assignment is not None:
             # Is this assigned to TAP_TEMPO?
-            if self.actuator.assignment.mode & CC_MODE_TAP_TEMPO:
+            if self.tap_tempo_ms and (self.actuator.assignment.mode & CC_MODE_TAP_TEMPO):
                 self.actuator.value = convert_from_ms(self.button.tap_tempo_ms, self.actuator.assignment.unit)
                 return
 
@@ -167,6 +180,7 @@ class FootswitchActuator:
 
     def update_assignment(self, assignment):
         if assignment is None:
+            self.tap_tempo_ms = None
             self.indicator.set_blink_rate(0, value=False)
             self.button.set_interval_limits(TAP_TEMPO_DEFAULT_MIN_INTERVAL_MS, TAP_TEMPO_DEFAULT_MAX_INTERVAL_MS)
             return
@@ -185,6 +199,7 @@ class FootswitchActuator:
                 convert_to_ms(assignment.min, assignment.unit),
             )
             interval_ms = convert_to_ms(assignment.value, assignment.unit)
+            self.tap_tempo_ms = interval_ms
             self.button.interval_ms = interval_ms
             self.indicator.set_blink_rate(TAP_TEMPO_ON_MS, interval_ms=interval_ms)
 

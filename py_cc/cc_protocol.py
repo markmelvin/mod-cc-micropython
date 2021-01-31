@@ -1,5 +1,3 @@
-import uasyncio as asyncio
-from primitives.irq_event import IRQ_EVENT
 import urandom as random
 from ucollections import deque
 import micropython
@@ -148,8 +146,10 @@ class CCSlave:
         self.response_cb = response_cb
         self.events_cb = events_cb
         self.us_timer = timer
-        # asyncio event to set in the timer interrupt
-        self.timer_event = IRQ_EVENT()
+        # Allocate a bound method reference for use in a callback
+        # (see https://docs.micropython.org/en/latest/reference/isr_rules.html#creation-of-python-objects
+        #  and https://forum.micropython.org/viewtopic.php?f=2&t=4027&p=23118#p23118)
+        self.on_timer_ref = self.on_timer
         self.device = device
         self.updates_queue = deque((), CC_UPDATES_QUEUE_SIZE)
         self.sync_counter = 0
@@ -159,7 +159,6 @@ class CCSlave:
         self.comm_state = WAITING_SYNCING
         self.sync_message = None
         self.protocol = CCProtocol()
-        asyncio.create_task(self.handle_timer_interrupt())
 
     def clear_updates(self,):
         while len(self.updates_queue) > 0:
@@ -177,25 +176,23 @@ class CCSlave:
         self.us_timer.init(prescaler=83, period=value, callback=self.timer_cb)
 
     def timer_cb(self, t):
-        # Called in an interrupt. Set asyncio event for consumption by asyncio handler.
         self.us_timer.callback(None)
-        self.timer_event.set()
+        micropython.schedule(self.on_timer_ref, 0)
 
-    async def handle_timer_interrupt(self,):
-        while True:
-            await self.timer_event.wait()  # Wait for the next timer interrupt
-            if len(self.updates_queue) == 0:
-                self.sync_counter += 1
-                if self.sync_counter >= I_AM_ALIVE_PERIOD:
-                    if self.sync_message:
-                        self.send_message(self.sync_message)
-                    else:
-                        self.send_message(CCMsgSync(self.protocol.address, {'type' : CC_SYNC_REGULAR_CYCLE}))
-                    self.sync_counter = 0
-            else:
-                # Send the next update
-                self.send_message(self.get_updates_message())
+    def on_timer(self, _):
+        # log(LOGLEVEL_DEBUG, "In on_timer: %s", len(self.updates_queue))
+        if len(self.updates_queue) == 0:
+            self.sync_counter += 1
+            if self.sync_counter >= I_AM_ALIVE_PERIOD:
+                if self.sync_message:
+                    self.send_message(self.sync_message, priority=CC_MSG_PRIORITY_HIGH)
+                else:
+                    self.send_message(CCMsgSync(self.protocol.address, {'type' : CC_SYNC_REGULAR_CYCLE}), priority=CC_MSG_PRIORITY_HIGH)
                 self.sync_counter = 0
+        else:
+            # Send the next update
+            self.send_message(self.get_updates_message())
+            self.sync_counter = 0
 
     def get_updates_message(self,):
         count = len(self.updates_queue)
@@ -204,11 +201,11 @@ class CCSlave:
         return CCMsgUpdates(self.protocol.address,
                             {'updates' : [self.updates_queue.popleft() for i in range(count)]})
 
-    def send_message(self, message):
+    def send_message(self, message, priority=CC_MSG_PRIORITY_LOW):
         if message.command != CC_CMD_CHAIN_SYNC:
             log(LOGLEVEL_INFO, "Sending message: %s", message.__dict__)
         # send sync byte plus message
-        self.response_cb(message)
+        self.response_cb(message, priority=priority)
 
     def raise_event(self, event):
         self.events_cb(event)
@@ -309,7 +306,8 @@ class CCSlave:
             elif isinstance(message, CCMsgAssignment):
                 self.device.add_assignment(message.assignment)
                 self.raise_event(CCEvent(CC_EV_ASSIGNMENT, message.assignment))
-                self.send_message(CCMsgAssignmentAcknowledge(self.protocol.address, CC_CMD_ASSIGNMENT, None))
+                # Acknowledge with high priority since this has a fairly strict timeout
+                self.send_message(CCMsgAssignmentAcknowledge(self.protocol.address, CC_CMD_ASSIGNMENT, None), priority=CC_MSG_PRIORITY_HIGH)
 
             elif isinstance(message, CCMsgUnassignment):
                 actuator_id = self.device.remove_assignment(message.assignment_id)

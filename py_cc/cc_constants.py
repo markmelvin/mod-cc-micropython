@@ -20,6 +20,9 @@ CC_PROTOCOL_MAX_UNKNOWN_BYTES   = 3000
 
 I_AM_ALIVE_PERIOD       = 50      # in sync cycles
 
+CC_MSG_PRIORITY_LOW     = 0
+CC_MSG_PRIORITY_HIGH    = 1
+
 # protocol version
 CC_PROTOCOL_MAJOR       = 0
 CC_PROTOCOL_MINOR       = 6
